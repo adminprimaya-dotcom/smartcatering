@@ -1,0 +1,6 @@
+{
+  "name": "Smart Catering & Sekolah Rakyat Management System",
+  "description": "Platform ERP terpadu untuk manajemen usaha catering komersial, program penyediaan makanan Sekolah Rakyat, akuntansi keuangan, stok bahan baku, produksi, dan pemetaan distribusi GPS.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
