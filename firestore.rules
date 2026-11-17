@@ -48,7 +48,7 @@ service cloud.firestore {
       return data.keys().hasAll(['ownerId', 'displayName', 'email', 'role', 'department', 'status', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['ownerId', 'displayName', 'email', 'role', 'department', 'status', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 150 &&
         data.role is string && data.role.size() >= 1 && data.role.size() <= 50 &&
@@ -62,7 +62,7 @@ service cloud.firestore {
       return data.keys().hasAll(['ownerId', 'name', 'category', 'packageName', 'description', 'imageUrl', 'sellingPrice', 'costPrice', 'estimatedProfit', 'available', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['ownerId', 'name', 'category', 'packageName', 'description', 'imageUrl', 'sellingPrice', 'costPrice', 'estimatedProfit', 'available', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         data.category is string && data.category.size() >= 1 && data.category.size() <= 60 &&
         data.packageName is string && data.packageName.size() >= 1 && data.packageName.size() <= 100 &&
@@ -78,14 +78,24 @@ service cloud.firestore {
 
     function isValidCateringOrder(data) {
       return data.keys().hasAll(['ownerId', 'orderNumber', 'customerName', 'whatsapp', 'orderDate', 'deliveryDate', 'eventType', 'packageName', 'portions', 'unitPrice', 'discount', 'totalPayment', 'downPayment', 'remainingBalance', 'paymentStatus', 'status', 'notes', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['ownerId', 'orderNumber', 'customerName', 'whatsapp', 'orderDate', 'deliveryDate', 'eventType', 'packageName', 'portions', 'unitPrice', 'discount', 'totalPayment', 'downPayment', 'remainingBalance', 'paymentStatus', 'status', 'notes', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'orderNumber', 'customerName', 'whatsapp', 'orderDate', 'deliveryDate', 'deliveryTime', 'deliveryAddress', 'deliveryMethod', 'shippingCost', 'paymentMethod', 'paymentProofUrl', 'paymentVerifiedAt', 'paymentVerifiedBy', 'cancellationReason', 'statusHistoryJson', 'eventType', 'packageName', 'portions', 'unitPrice', 'discount', 'totalPayment', 'downPayment', 'remainingBalance', 'paymentStatus', 'status', 'notes', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 40 &&
         data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
         data.whatsapp is string && data.whatsapp.size() >= 5 && data.whatsapp.size() <= 30 &&
         data.orderDate is string && data.orderDate.size() >= 8 && data.orderDate.size() <= 25 &&
         data.deliveryDate is string && data.deliveryDate.size() >= 8 && data.deliveryDate.size() <= 25 &&
+        (!('deliveryTime' in data) || (data.deliveryTime is string && data.deliveryTime.size() <= 25)) &&
+        (!('deliveryAddress' in data) || (data.deliveryAddress is string && data.deliveryAddress.size() <= 300)) &&
+        (!('deliveryMethod' in data) || (data.deliveryMethod is string && data.deliveryMethod.size() <= 40)) &&
+        (!('shippingCost' in data) || (data.shippingCost is number && data.shippingCost >= 0 && data.shippingCost <= 100000000)) &&
+        (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 30)) &&
+        (!('paymentProofUrl' in data) || (data.paymentProofUrl is string && data.paymentProofUrl.size() <= 500)) &&
+        (!('paymentVerifiedAt' in data) || (data.paymentVerifiedAt is string && data.paymentVerifiedAt.size() <= 40)) &&
+        (!('paymentVerifiedBy' in data) || (data.paymentVerifiedBy is string && data.paymentVerifiedBy.size() <= 100)) &&
+        (!('cancellationReason' in data) || (data.cancellationReason is string && data.cancellationReason.size() <= 300)) &&
+        (!('statusHistoryJson' in data) || (data.statusHistoryJson is string && data.statusHistoryJson.size() <= 2000)) &&
         data.eventType is string && data.eventType.size() >= 1 && data.eventType.size() <= 60 &&
         data.packageName is string && data.packageName.size() >= 1 && data.packageName.size() <= 120 &&
         data.portions is number && data.portions >= 1 && data.portions <= 100000 &&
@@ -95,7 +105,7 @@ service cloud.firestore {
         data.downPayment is number && data.downPayment >= 0 && data.downPayment <= 10000000000 &&
         data.remainingBalance is number && data.remainingBalance >= 0 && data.remainingBalance <= 10000000000 &&
         data.paymentStatus is string && data.paymentStatus.size() <= 30 && data.paymentStatus in ['Belum Bayar', 'DP Masuk', 'Lunas'] &&
-        data.status is string && data.status.size() <= 40 && data.status in ['Pesanan baru', 'Menunggu pembayaran', 'Diproses', 'Sedang diproduksi', 'Siap dikirim', 'Dalam pengiriman', 'Selesai', 'Dibatalkan'] &&
+        data.status is string && data.status.size() <= 40 && data.status in ['Pesanan baru', 'Menunggu pembayaran', 'DP masuk', 'Diproses', 'Sedang diproduksi', 'Siap dikirim', 'Dalam pengiriman', 'Selesai', 'Dibatalkan'] &&
         data.notes is string && data.notes.size() <= 400 &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -105,7 +115,7 @@ service cloud.firestore {
       return data.keys().hasAll(['ownerId', 'name', 'address', 'phone', 'locationLat', 'locationLng', 'totalPurchases', 'transactionCount', 'isActive', 'isPriority', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['ownerId', 'name', 'address', 'phone', 'locationLat', 'locationLng', 'totalPurchases', 'transactionCount', 'isActive', 'isPriority', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         data.address is string && data.address.size() >= 1 && data.address.size() <= 300 &&
         data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 30 &&
@@ -123,7 +133,7 @@ service cloud.firestore {
       return data.keys().hasAll(['ownerId', 'productionDate', 'menuName', 'targetChannel', 'portions', 'recipeSummary', 'rawMaterialNeed', 'productionCost', 'officerName', 'status', 'documentationNote', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['ownerId', 'productionDate', 'menuName', 'targetChannel', 'portions', 'recipeSummary', 'rawMaterialNeed', 'productionCost', 'officerName', 'status', 'documentationNote', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.productionDate is string && data.productionDate.size() >= 8 && data.productionDate.size() <= 25 &&
         data.menuName is string && data.menuName.size() >= 1 && data.menuName.size() <= 120 &&
         data.targetChannel is string && data.targetChannel.size() <= 40 && data.targetChannel in ['Catering Komersial', 'Sekolah Rakyat'] &&
@@ -142,7 +152,7 @@ service cloud.firestore {
       return data.keys().hasAll(['ownerId', 'schoolName', 'npsn', 'address', 'principalName', 'contactPhone', 'lat', 'lng', 'studentCount', 'classCount', 'deliverySchedule', 'partnershipStatus', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['ownerId', 'schoolName', 'npsn', 'address', 'principalName', 'contactPhone', 'lat', 'lng', 'studentCount', 'classCount', 'deliverySchedule', 'partnershipStatus', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.schoolName is string && data.schoolName.size() >= 1 && data.schoolName.size() <= 150 &&
         data.npsn is string && data.npsn.size() >= 4 && data.npsn.size() <= 25 &&
         data.address is string && data.address.size() >= 1 && data.address.size() <= 300 &&
@@ -160,18 +170,22 @@ service cloud.firestore {
 
     function isValidSchoolDelivery(data) {
       return data.keys().hasAll(['ownerId', 'deliveryDate', 'schoolId', 'schoolName', 'menuPackage', 'portionsDelivered', 'courierName', 'departureTime', 'arrivalTime', 'recipientName', 'status', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['ownerId', 'deliveryDate', 'schoolId', 'schoolName', 'menuPackage', 'portionsDelivered', 'courierName', 'departureTime', 'arrivalTime', 'recipientName', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'deliveryDate', 'schoolId', 'schoolName', 'menuPackage', 'portionsDelivered', 'portionsPlanned', 'productionBatchId', 'courierName', 'departureTime', 'arrivalTime', 'recipientName', 'handoverProofNote', 'handoverProofUrl', 'status', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.deliveryDate is string && data.deliveryDate.size() >= 8 && data.deliveryDate.size() <= 25 &&
         isValidId(data.schoolId) &&
         data.schoolName is string && data.schoolName.size() >= 1 && data.schoolName.size() <= 150 &&
         data.menuPackage is string && data.menuPackage.size() >= 1 && data.menuPackage.size() <= 150 &&
         data.portionsDelivered is number && data.portionsDelivered >= 1 && data.portionsDelivered <= 50000 &&
+        (!('portionsPlanned' in data) || (data.portionsPlanned is number && data.portionsPlanned >= 0 && data.portionsPlanned <= 50000)) &&
+        (!('productionBatchId' in data) || (data.productionBatchId is string && data.productionBatchId.size() <= 128)) &&
         data.courierName is string && data.courierName.size() >= 1 && data.courierName.size() <= 100 &&
         data.departureTime is string && data.departureTime.size() >= 3 && data.departureTime.size() <= 20 &&
         data.arrivalTime is string && data.arrivalTime.size() >= 1 && data.arrivalTime.size() <= 20 &&
         data.recipientName is string && data.recipientName.size() >= 1 && data.recipientName.size() <= 120 &&
+        (!('handoverProofNote' in data) || (data.handoverProofNote is string && data.handoverProofNote.size() <= 400)) &&
+        (!('handoverProofUrl' in data) || (data.handoverProofUrl is string && data.handoverProofUrl.size() <= 500)) &&
         data.status is string && data.status.size() <= 40 && data.status in ['Persiapan', 'Dalam Pengiriman', 'Selesai', 'Dibatalkan'] &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -179,17 +193,23 @@ service cloud.firestore {
 
     function isValidFinanceEntry(data) {
       return data.keys().hasAll(['ownerId', 'transactionDate', 'referenceCode', 'type', 'category', 'description', 'amount', 'accountMethod', 'settlementStatus', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['ownerId', 'transactionDate', 'referenceCode', 'type', 'category', 'description', 'amount', 'accountMethod', 'settlementStatus', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'transactionDate', 'referenceCode', 'orderRef', 'type', 'category', 'description', 'amount', 'accountMethod', 'settlementStatus', 'reconciled', 'reconciledAt', 'reconciledBy', 'correctionNote', 'auditTrailJson', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.transactionDate is string && data.transactionDate.size() >= 8 && data.transactionDate.size() <= 25 &&
         data.referenceCode is string && data.referenceCode.size() >= 3 && data.referenceCode.size() <= 40 &&
+        (!('orderRef' in data) || (data.orderRef is string && data.orderRef.size() <= 60)) &&
         data.type is string && data.type.size() <= 40 && data.type in ['Pendapatan Catering', 'Pendapatan Sekolah Rakyat', 'Pengeluaran Operasional', 'Utang Supplier', 'Piutang Pelanggan'] &&
         data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
         data.description is string && data.description.size() >= 1 && data.description.size() <= 300 &&
         data.amount is number && data.amount >= 0 && data.amount <= 100000000000 &&
-        data.accountMethod is string && data.accountMethod.size() <= 50 && data.accountMethod in ['Kas Tunai', 'Bank Mandiri ERP', 'Bank BRI Sekolah Rakyat', 'Bank BCA Corporate'] &&
+        data.accountMethod is string && data.accountMethod.size() <= 50 && data.accountMethod in ['Kas Tunai', 'QRIS', 'Bank Mandiri ERP', 'Bank BRI Sekolah Rakyat', 'Bank BCA Corporate'] &&
         data.settlementStatus is string && data.settlementStatus.size() <= 25 && data.settlementStatus in ['Lunas', 'Belum Lunas'] &&
+        (!('reconciled' in data) || data.reconciled is bool) &&
+        (!('reconciledAt' in data) || (data.reconciledAt is string && data.reconciledAt.size() <= 40)) &&
+        (!('reconciledBy' in data) || (data.reconciledBy is string && data.reconciledBy.size() <= 100)) &&
+        (!('correctionNote' in data) || (data.correctionNote is string && data.correctionNote.size() <= 300)) &&
+        (!('auditTrailJson' in data) || (data.auditTrailJson is string && data.auditTrailJson.size() <= 2000)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -198,7 +218,7 @@ service cloud.firestore {
       return data.keys().hasAll(['ownerId', 'itemCode', 'name', 'category', 'stockQty', 'minStock', 'unit', 'unitCost', 'supplierName', 'lastRestockDate', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['ownerId', 'itemCode', 'name', 'category', 'stockQty', 'minStock', 'unit', 'unitCost', 'supplierName', 'lastRestockDate', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.itemCode is string && data.itemCode.size() >= 2 && data.itemCode.size() <= 30 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         data.category is string && data.category.size() >= 1 && data.category.size() <= 60 &&
@@ -216,7 +236,7 @@ service cloud.firestore {
       return data.keys().hasAll(['ownerId', 'promoCode', 'title', 'targetSegment', 'discountPercent', 'maxDiscountAmount', 'validUntil', 'active', 'usageCount', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['ownerId', 'promoCode', 'title', 'targetSegment', 'discountPercent', 'maxDiscountAmount', 'validUntil', 'active', 'usageCount', 'createdAt', 'updatedAt']) &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
         data.promoCode is string && data.promoCode.size() >= 3 && data.promoCode.size() <= 30 &&
         data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
         data.targetSegment is string && data.targetSegment.size() >= 1 && data.targetSegment.size() <= 80 &&
@@ -227,6 +247,23 @@ service cloud.firestore {
         data.usageCount is number && data.usageCount >= 0 && data.usageCount <= 1000000 &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['ownerId', 'entityType', 'entityId', 'entityLabel', 'action', 'actorUid', 'actorName', 'actorRole', 'details', 'timestampIso', 'createdAt']) &&
+        data.keys().hasOnly(['ownerId', 'entityType', 'entityId', 'entityLabel', 'action', 'actorUid', 'actorName', 'actorRole', 'details', 'timestampIso', 'createdAt']) &&
+        isValidId(data.ownerId) &&
+        (data.ownerId == request.auth.uid || isAdmin()) &&
+        data.entityType is string && data.entityType.size() >= 1 && data.entityType.size() <= 50 &&
+        data.entityId is string && data.entityId.size() >= 1 && data.entityId.size() <= 128 &&
+        data.entityLabel is string && data.entityLabel.size() >= 1 && data.entityLabel.size() <= 200 &&
+        data.action is string && data.action.size() <= 30 && data.action in ['create', 'update', 'delete', 'restore', 'reconcile', 'cancel', 'verify_payment'] &&
+        data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 &&
+        data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 100 &&
+        data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 60 &&
+        data.details is string && data.details.size() >= 1 && data.details.size() <= 500 &&
+        data.timestampIso is string && data.timestampIso.size() >= 8 && data.timestampIso.size() <= 40 &&
+        data.createdAt is timestamp;
     }
 
     // 1. Admins Collection
@@ -242,7 +279,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
-      allow create: if isVerified() && isValidId(userId) && request.auth.uid == userId &&
+      allow create: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin()) &&
         isValidUserProfile(incoming()) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
@@ -373,7 +410,7 @@ service cloud.firestore {
       allow delete: if isVerified() && isValidId(deliveryId) && (existing().ownerId == request.auth.uid || isAdmin());
     }
 
-    // 9. Finance Entries Collection
+    // 9. Finance Entries Collection (with Reconciliation Delete Lock)
     match /finance_entries/{entryId} {
       allow get: if isVerified() && isValidId(entryId) && (existing().ownerId == request.auth.uid || isAdmin());
       allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
@@ -386,10 +423,12 @@ service cloud.firestore {
           isAdmin() ||
           (existing().ownerId == request.auth.uid && (
             incoming().diff(existing()).affectedKeys().hasOnly(['settlementStatus', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['transactionDate', 'referenceCode', 'type', 'category', 'description', 'amount', 'accountMethod', 'settlementStatus', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['transactionDate', 'referenceCode', 'orderRef', 'type', 'category', 'description', 'amount', 'accountMethod', 'settlementStatus', 'reconciled', 'reconciledAt', 'reconciledBy', 'correctionNote', 'auditTrailJson', 'updatedAt'])
           ))
         );
-      allow delete: if isVerified() && isValidId(entryId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow delete: if isVerified() && isValidId(entryId) &&
+        existing().get('reconciled', false) != true &&
+        (existing().ownerId == request.auth.uid || isAdmin());
     }
 
     // 10. Inventory Items Collection
@@ -428,6 +467,15 @@ service cloud.firestore {
           ))
         );
       allow delete: if isVerified() && isValidId(promoId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    // 12. Audit Logs Collection (Immutable Operational & Financial Audit Trail)
+    match /audit_logs/{logId} {
+      allow get: if isVerified() && isValidId(logId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(logId) && isValidAuditLog(incoming()) &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
     }
   }
 }

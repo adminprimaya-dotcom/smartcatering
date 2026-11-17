@@ -1,17 +1,17 @@
 import {
   collection,
-  deleteDoc,
   doc,
-  getDocs,
+  getDoc,
+  limit,
   onSnapshot,
   query,
   serverTimestamp,
-  setDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import {
+  AuditLogEntry,
   CateringOrder,
   CustomerRecord,
   ErpStateSnapshot,
@@ -22,267 +22,438 @@ import {
   PromotionItem,
   SchoolDelivery,
   SchoolRecord,
+  SyncStatus,
   UserProfileRecord,
 } from '../types/erp';
-import { createInitialErpSeed } from '../data/seedData';
 
-function sanitizeId(rawId: string): string {
-  const cleaned = rawId.replace(/[^a-zA-Z0-9_\-]/g, '-').slice(0, 120);
+export interface AuditActorContext {
+  actorUid: string;
+  actorName: string;
+  actorRole: string;
+  entityLabel?: string;
+  action?: AuditLogEntry['action'];
+  details?: string;
+}
+
+export function sanitizeId(rawId: string): string {
+  const cleaned = String(rawId || '')
+    .replace(/[^a-zA-Z0-9_\-]/g, '-')
+    .slice(0, 120);
   return cleaned || `id-${Date.now()}`;
 }
 
-function clampStr(val: string, max: number, min = 1, fallback = '-'): string {
-  const trimmed = (val ?? '').trim();
+function clampStr(val: unknown, max: number, min = 1, fallback = '-'): string {
+  const trimmed = String(val ?? '').trim();
   if (trimmed.length < min) return min === 0 ? '' : fallback;
   return trimmed.slice(0, max);
 }
 
-export async function seedCloudFirestoreIfNeeded(uid: string): Promise<void> {
-  const path = 'menu_items';
-  try {
-    const q = query(collection(db, path), where('ownerId', '==', uid));
-    const snap = await getDocs(q);
-    if (!snap.empty) return;
-
-    const seed = createInitialErpSeed(uid);
-    await restoreSnapshotToFirestore(uid, seed);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
+function clampNum(val: unknown, min: number, max: number, fallback = 0): number {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }
 
-export async function restoreSnapshotToFirestore(
-  uid: string,
-  snapshotData: ErpStateSnapshot
-): Promise<void> {
-  const batch = writeBatch(db);
-  const now = serverTimestamp();
+function sanitizePayload(
+  colName: string,
+  rest: Record<string, unknown>,
+  fallbackOwnerId: string
+): Record<string, unknown> {
+  const ownerId = sanitizeId(String(rest.ownerId || fallbackOwnerId || 'admin-workspace-uid'));
 
-  // 1. Schools first so school_deliveries relational check passes
-  for (const s of snapshotData.schools) {
-    const id = sanitizeId(s.id);
-    batch.set(doc(db, 'schools', id), {
-      ownerId: uid,
-      schoolName: clampStr(s.schoolName, 150),
-      npsn: clampStr(s.npsn, 25, 4, '20100001'),
-      address: clampStr(s.address, 300),
-      principalName: clampStr(s.principalName, 120),
-      contactPhone: clampStr(s.contactPhone, 30, 5, '0812000000'),
-      lat: Number(s.lat) || -6.2,
-      lng: Number(s.lng) || 106.8,
-      studentCount: Math.max(1, Number(s.studentCount) || 100),
-      classCount: Math.max(1, Number(s.classCount) || 6),
-      deliverySchedule: clampStr(s.deliverySchedule, 120),
-      partnershipStatus: s.partnershipStatus || 'Aktif',
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
+  switch (colName) {
+    case 'users':
+      return {
+        ownerId,
+        displayName: clampStr(rest.displayName, 100, 1, 'Administrator'),
+        email: clampStr(rest.email, 150, 3, 'primayaadmin@gmail.com'),
+        role: clampStr(rest.role, 50, 1, 'Staf Operasional'),
+        department: clampStr(rest.department, 80, 1, 'Manajemen Pusat & Akuntansi'),
+        status: rest.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
+      };
 
-  for (const m of snapshotData.menuItems) {
-    const id = sanitizeId(m.id);
-    batch.set(doc(db, 'menu_items', id), {
-      ownerId: uid,
-      name: clampStr(m.name, 120),
-      category: clampStr(m.category, 60),
-      packageName: clampStr(m.packageName, 100),
-      description: clampStr(m.description, 500),
-      imageUrl: clampStr(m.imageUrl, 400),
-      sellingPrice: Math.max(0, Number(m.sellingPrice) || 0),
-      costPrice: Math.max(0, Number(m.costPrice) || 0),
-      estimatedProfit: Number(m.estimatedProfit) || 0,
-      available: Boolean(m.available),
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
+    case 'menu_items':
+      return {
+        ownerId,
+        name: clampStr(rest.name, 120, 1, 'Menu Catering'),
+        category: clampStr(rest.category, 60, 1, 'Nasi kotak'),
+        packageName: clampStr(rest.packageName, 100, 1, 'Paket Standar'),
+        description: clampStr(rest.description, 500, 1, '-'),
+        imageUrl: clampStr(rest.imageUrl, 400, 1, '/logo.png'),
+        sellingPrice: clampNum(rest.sellingPrice, 0, 1000000000, 0),
+        costPrice: clampNum(rest.costPrice, 0, 1000000000, 0),
+        estimatedProfit: clampNum(rest.estimatedProfit, -1000000000, 1000000000, 0),
+        available: Boolean(rest.available),
+      };
 
-  for (const o of snapshotData.cateringOrders) {
-    const id = sanitizeId(o.id);
-    batch.set(doc(db, 'catering_orders', id), {
-      ownerId: uid,
-      orderNumber: clampStr(o.orderNumber, 40, 3, 'ORD-001'),
-      customerName: clampStr(o.customerName, 120),
-      whatsapp: clampStr(o.whatsapp, 30, 5, '0812000000'),
-      orderDate: clampStr(o.orderDate, 25, 8, '2026-11-16'),
-      deliveryDate: clampStr(o.deliveryDate, 25, 8, '2026-11-16'),
-      eventType: clampStr(o.eventType, 60),
-      packageName: clampStr(o.packageName, 120),
-      portions: Math.max(1, Number(o.portions) || 1),
-      unitPrice: Math.max(0, Number(o.unitPrice) || 0),
-      discount: Math.max(0, Number(o.discount) || 0),
-      totalPayment: Math.max(0, Number(o.totalPayment) || 0),
-      downPayment: Math.max(0, Number(o.downPayment) || 0),
-      remainingBalance: Math.max(0, Number(o.remainingBalance) || 0),
-      paymentStatus: o.paymentStatus || 'Belum Bayar',
-      status: o.status || 'Pesanan baru',
-      notes: clampStr(o.notes, 400, 0, ''),
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
+    case 'catering_orders': {
+      const validPayStatuses = ['Belum Bayar', 'DP Masuk', 'Lunas'];
+      const validStatuses = [
+        'Pesanan baru',
+        'Menunggu pembayaran',
+        'DP masuk',
+        'Diproses',
+        'Sedang diproduksi',
+        'Siap dikirim',
+        'Dalam pengiriman',
+        'Selesai',
+        'Dibatalkan',
+      ];
+      const base: Record<string, unknown> = {
+        ownerId,
+        orderNumber: clampStr(rest.orderNumber, 40, 3, 'ORD-001'),
+        customerName: clampStr(rest.customerName, 120, 1, 'Pelanggan'),
+        whatsapp: clampStr(rest.whatsapp, 30, 5, '0812000000'),
+        orderDate: clampStr(rest.orderDate, 25, 8, '2026-11-16'),
+        deliveryDate: clampStr(rest.deliveryDate, 25, 8, '2026-11-16'),
+        eventType: clampStr(rest.eventType, 60, 1, 'Nasi kotak'),
+        packageName: clampStr(rest.packageName, 120, 1, 'Paket Catering'),
+        portions: clampNum(rest.portions, 1, 100000, 1),
+        unitPrice: clampNum(rest.unitPrice, 0, 100000000, 0),
+        discount: clampNum(rest.discount, 0, 1000000000, 0),
+        totalPayment: clampNum(rest.totalPayment, 0, 10000000000, 0),
+        downPayment: clampNum(rest.downPayment, 0, 10000000000, 0),
+        remainingBalance: clampNum(rest.remainingBalance, 0, 10000000000, 0),
+        paymentStatus: validPayStatuses.includes(String(rest.paymentStatus))
+          ? String(rest.paymentStatus)
+          : 'Belum Bayar',
+        status: validStatuses.includes(String(rest.status))
+          ? String(rest.status)
+          : 'Pesanan baru',
+        notes: clampStr(rest.notes, 400, 0, ''),
+      };
 
-  for (const c of snapshotData.customers) {
-    const id = sanitizeId(c.id);
-    batch.set(doc(db, 'customers', id), {
-      ownerId: uid,
-      name: clampStr(c.name, 120),
-      address: clampStr(c.address, 300),
-      phone: clampStr(c.phone, 30, 5, '0812000000'),
-      locationLat: Number(c.locationLat) || -6.2,
-      locationLng: Number(c.locationLng) || 106.8,
-      totalPurchases: Math.max(0, Number(c.totalPurchases) || 0),
-      transactionCount: Math.max(0, Number(c.transactionCount) || 0),
-      isActive: Boolean(c.isActive),
-      isPriority: Boolean(c.isPriority),
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
+      if (rest.deliveryTime) base.deliveryTime = clampStr(rest.deliveryTime, 25, 0, '');
+      if (rest.deliveryAddress) base.deliveryAddress = clampStr(rest.deliveryAddress, 300, 0, '');
+      if (rest.deliveryMethod) base.deliveryMethod = clampStr(rest.deliveryMethod, 40, 0, '');
+      if (typeof rest.shippingCost === 'number') {
+        base.shippingCost = clampNum(rest.shippingCost, 0, 100000000, 0);
+      }
+      if (rest.paymentMethod) base.paymentMethod = clampStr(rest.paymentMethod, 30, 0, '');
+      if (rest.paymentProofUrl) base.paymentProofUrl = clampStr(rest.paymentProofUrl, 500, 0, '');
+      if (rest.paymentVerifiedAt) {
+        base.paymentVerifiedAt = clampStr(rest.paymentVerifiedAt, 40, 0, '');
+      }
+      if (rest.paymentVerifiedBy) {
+        base.paymentVerifiedBy = clampStr(rest.paymentVerifiedBy, 100, 0, '');
+      }
+      if (rest.cancellationReason) {
+        base.cancellationReason = clampStr(rest.cancellationReason, 300, 0, '');
+      }
+      if (rest.statusHistoryJson) {
+        base.statusHistoryJson = clampStr(rest.statusHistoryJson, 2000, 0, '');
+      } else if (Array.isArray(rest.statusHistory) && rest.statusHistory.length > 0) {
+        base.statusHistoryJson = JSON.stringify(rest.statusHistory).slice(0, 2000);
+      }
 
-  for (const p of snapshotData.productionBatches) {
-    const id = sanitizeId(p.id);
-    batch.set(doc(db, 'production_batches', id), {
-      ownerId: uid,
-      productionDate: clampStr(p.productionDate, 25, 8, '2026-11-16'),
-      menuName: clampStr(p.menuName, 120),
-      targetChannel: p.targetChannel || 'Catering Komersial',
-      portions: Math.max(1, Number(p.portions) || 1),
-      recipeSummary: clampStr(p.recipeSummary, 400),
-      rawMaterialNeed: clampStr(p.rawMaterialNeed, 400),
-      productionCost: Math.max(0, Number(p.productionCost) || 0),
-      officerName: clampStr(p.officerName, 100),
-      status: p.status || 'Terjadwal',
-      documentationNote: clampStr(p.documentationNote, 300),
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-
-  for (const f of snapshotData.financeEntries) {
-    const id = sanitizeId(f.id);
-    batch.set(doc(db, 'finance_entries', id), {
-      ownerId: uid,
-      transactionDate: clampStr(f.transactionDate, 25, 8, '2026-11-16'),
-      referenceCode: clampStr(f.referenceCode, 40, 3, 'TRX-001'),
-      type: f.type || 'Pendapatan Catering',
-      category: clampStr(f.category, 80),
-      description: clampStr(f.description, 300),
-      amount: Math.max(0, Number(f.amount) || 0),
-      accountMethod: f.accountMethod || 'Bank Mandiri ERP',
-      settlementStatus: f.settlementStatus || 'Lunas',
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-
-  for (const inv of snapshotData.inventoryItems) {
-    const id = sanitizeId(inv.id);
-    batch.set(doc(db, 'inventory_items', id), {
-      ownerId: uid,
-      itemCode: clampStr(inv.itemCode, 30, 2, 'BHN-01'),
-      name: clampStr(inv.name, 120),
-      category: clampStr(inv.category, 60),
-      stockQty: Math.max(0, Number(inv.stockQty) || 0),
-      minStock: Math.max(0, Number(inv.minStock) || 0),
-      unit: clampStr(inv.unit, 20),
-      unitCost: Math.max(0, Number(inv.unitCost) || 0),
-      supplierName: clampStr(inv.supplierName, 120),
-      lastRestockDate: clampStr(inv.lastRestockDate, 25, 8, '2026-11-16'),
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-
-  for (const pr of snapshotData.promotions) {
-    const id = sanitizeId(pr.id);
-    batch.set(doc(db, 'promotions', id), {
-      ownerId: uid,
-      promoCode: clampStr(pr.promoCode, 30, 3, 'PROMO'),
-      title: clampStr(pr.title, 120),
-      targetSegment: clampStr(pr.targetSegment, 80),
-      discountPercent: Math.min(100, Math.max(1, Number(pr.discountPercent) || 5)),
-      maxDiscountAmount: Math.max(0, Number(pr.maxDiscountAmount) || 0),
-      validUntil: clampStr(pr.validUntil, 25, 8, '2026-12-31'),
-      active: Boolean(pr.active),
-      usageCount: Math.max(0, Number(pr.usageCount) || 0),
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-
-  try {
-    await batch.commit();
-
-    // Commit school_deliveries after schools exist
-    const delBatch = writeBatch(db);
-    for (const d of snapshotData.schoolDeliveries) {
-      const id = sanitizeId(d.id);
-      delBatch.set(doc(db, 'school_deliveries', id), {
-        ownerId: uid,
-        deliveryDate: clampStr(d.deliveryDate, 25, 8, '2026-11-16'),
-        schoolId: sanitizeId(d.schoolId),
-        schoolName: clampStr(d.schoolName, 150),
-        menuPackage: clampStr(d.menuPackage, 150),
-        portionsDelivered: Math.max(1, Number(d.portionsDelivered) || 1),
-        courierName: clampStr(d.courierName, 100),
-        departureTime: clampStr(d.departureTime, 20, 3, '07:00 WIB'),
-        arrivalTime: clampStr(d.arrivalTime, 20, 1, '-'),
-        recipientName: clampStr(d.recipientName, 120),
-        status: d.status || 'Persiapan',
-        createdAt: now,
-        updatedAt: now,
-      });
+      return base;
     }
-    await delBatch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'batch_restore');
+
+    case 'customers':
+      return {
+        ownerId,
+        name: clampStr(rest.name, 120, 1, 'Pelanggan'),
+        address: clampStr(rest.address, 300, 1, '-'),
+        phone: clampStr(rest.phone, 30, 5, '0812000000'),
+        locationLat: clampNum(rest.locationLat, -90, 90, -6.2),
+        locationLng: clampNum(rest.locationLng, -180, 180, 106.8),
+        totalPurchases: clampNum(rest.totalPurchases, 0, 100000000000, 0),
+        transactionCount: clampNum(rest.transactionCount, 0, 100000, 0),
+        isActive: Boolean(rest.isActive),
+        isPriority: Boolean(rest.isPriority),
+      };
+
+    case 'production_batches': {
+      const validProdStatuses = [
+        'Terjadwal',
+        'Persiapan Bahan',
+        'Sedang Dimasak',
+        'Quality Control',
+        'Selesai',
+        'Dibatalkan',
+      ];
+      return {
+        ownerId,
+        productionDate: clampStr(rest.productionDate, 25, 8, '2026-11-16'),
+        menuName: clampStr(rest.menuName, 120, 1, 'Menu Produksi'),
+        targetChannel:
+          rest.targetChannel === 'Sekolah Rakyat' ? 'Sekolah Rakyat' : 'Catering Komersial',
+        portions: clampNum(rest.portions, 1, 100000, 1),
+        recipeSummary: clampStr(rest.recipeSummary, 400, 1, '-'),
+        rawMaterialNeed: clampStr(rest.rawMaterialNeed, 400, 1, '-'),
+        productionCost: clampNum(rest.productionCost, 0, 10000000000, 0),
+        officerName: clampStr(rest.officerName, 100, 1, 'Tim Dapur'),
+        status: validProdStatuses.includes(String(rest.status))
+          ? String(rest.status)
+          : 'Terjadwal',
+        documentationNote: clampStr(rest.documentationNote, 300, 1, '-'),
+      };
+    }
+
+    case 'schools': {
+      const validPartnership = ['Aktif', 'Evaluasi', 'Nonaktif'];
+      return {
+        ownerId,
+        schoolName: clampStr(rest.schoolName, 150, 1, 'Sekolah Mitra'),
+        npsn: clampStr(rest.npsn, 25, 4, '20100001'),
+        address: clampStr(rest.address, 300, 1, '-'),
+        principalName: clampStr(rest.principalName, 120, 1, '-'),
+        contactPhone: clampStr(rest.contactPhone, 30, 5, '0812000000'),
+        lat: clampNum(rest.lat, -90, 90, -6.2),
+        lng: clampNum(rest.lng, -180, 180, 106.8),
+        studentCount: clampNum(rest.studentCount, 1, 50000, 100),
+        classCount: clampNum(rest.classCount, 1, 1000, 6),
+        deliverySchedule: clampStr(rest.deliverySchedule, 120, 1, 'Setiap Hari Sekolah'),
+        partnershipStatus: validPartnership.includes(String(rest.partnershipStatus))
+          ? String(rest.partnershipStatus)
+          : 'Aktif',
+      };
+    }
+
+    case 'school_deliveries': {
+      const validDelivStatuses = ['Persiapan', 'Dalam Pengiriman', 'Selesai', 'Dibatalkan'];
+      const base: Record<string, unknown> = {
+        ownerId,
+        deliveryDate: clampStr(rest.deliveryDate, 25, 8, '2026-11-16'),
+        schoolId: sanitizeId(String(rest.schoolId || 'sch-1')),
+        schoolName: clampStr(rest.schoolName, 150, 1, 'Sekolah Mitra'),
+        menuPackage: clampStr(rest.menuPackage, 150, 1, 'Paket Gizi'),
+        portionsDelivered: clampNum(rest.portionsDelivered, 1, 50000, 1),
+        courierName: clampStr(rest.courierName, 100, 1, 'Kurir'),
+        departureTime: clampStr(rest.departureTime, 20, 3, '07:00 WIB'),
+        arrivalTime: clampStr(rest.arrivalTime, 20, 1, '-'),
+        recipientName: clampStr(rest.recipientName, 120, 1, '-'),
+        status: validDelivStatuses.includes(String(rest.status))
+          ? String(rest.status)
+          : 'Persiapan',
+      };
+      if (typeof rest.portionsPlanned === 'number') {
+        base.portionsPlanned = clampNum(rest.portionsPlanned, 0, 50000, 0);
+      }
+      if (rest.productionBatchId) {
+        base.productionBatchId = clampStr(rest.productionBatchId, 128, 0, '');
+      }
+      if (rest.handoverProofNote) {
+        base.handoverProofNote = clampStr(rest.handoverProofNote, 400, 0, '');
+      }
+      if (rest.handoverProofUrl) {
+        base.handoverProofUrl = clampStr(rest.handoverProofUrl, 500, 0, '');
+      }
+      return base;
+    }
+
+    case 'finance_entries': {
+      const validTypes = [
+        'Pendapatan Catering',
+        'Pendapatan Sekolah Rakyat',
+        'Pengeluaran Operasional',
+        'Utang Supplier',
+        'Piutang Pelanggan',
+      ];
+      const validAccounts = [
+        'Kas Tunai',
+        'QRIS',
+        'Bank Mandiri ERP',
+        'Bank BRI Sekolah Rakyat',
+        'Bank BCA Corporate',
+      ];
+      const base: Record<string, unknown> = {
+        ownerId,
+        transactionDate: clampStr(rest.transactionDate, 25, 8, '2026-11-16'),
+        referenceCode: clampStr(rest.referenceCode, 40, 3, 'TRX-001'),
+        type: validTypes.includes(String(rest.type)) ? String(rest.type) : 'Pendapatan Catering',
+        category: clampStr(rest.category, 80, 1, 'Operasional'),
+        description: clampStr(rest.description, 300, 1, '-'),
+        amount: clampNum(rest.amount, 0, 100000000000, 0),
+        accountMethod: validAccounts.includes(String(rest.accountMethod))
+          ? String(rest.accountMethod)
+          : 'Bank Mandiri ERP',
+        settlementStatus: rest.settlementStatus === 'Belum Lunas' ? 'Belum Lunas' : 'Lunas',
+      };
+      if (rest.orderRef) base.orderRef = clampStr(rest.orderRef, 60, 0, '');
+      if (typeof rest.reconciled === 'boolean') base.reconciled = rest.reconciled;
+      if (rest.reconciledAt) base.reconciledAt = clampStr(rest.reconciledAt, 40, 0, '');
+      if (rest.reconciledBy) base.reconciledBy = clampStr(rest.reconciledBy, 100, 0, '');
+      if (rest.correctionNote) base.correctionNote = clampStr(rest.correctionNote, 300, 0, '');
+      if (rest.auditTrailJson) base.auditTrailJson = clampStr(rest.auditTrailJson, 2000, 0, '');
+      return base;
+    }
+
+    case 'inventory_items':
+      return {
+        ownerId,
+        itemCode: clampStr(rest.itemCode, 30, 2, 'BHN-01'),
+        name: clampStr(rest.name, 120, 1, 'Bahan Dapur'),
+        category: clampStr(rest.category, 60, 1, 'Bahan Pokok'),
+        stockQty: clampNum(rest.stockQty, 0, 1000000, 0),
+        minStock: clampNum(rest.minStock, 0, 1000000, 0),
+        unit: clampStr(rest.unit, 20, 1, 'kg'),
+        unitCost: clampNum(rest.unitCost, 0, 100000000, 0),
+        supplierName: clampStr(rest.supplierName, 120, 1, '-'),
+        lastRestockDate: clampStr(rest.lastRestockDate, 25, 8, '2026-11-16'),
+      };
+
+    case 'promotions':
+      return {
+        ownerId,
+        promoCode: clampStr(rest.promoCode, 30, 3, 'PROMO'),
+        title: clampStr(rest.title, 120, 1, 'Promo'),
+        targetSegment: clampStr(rest.targetSegment, 80, 1, 'Semua Pelanggan'),
+        discountPercent: clampNum(rest.discountPercent, 1, 100, 5),
+        maxDiscountAmount: clampNum(rest.maxDiscountAmount, 0, 100000000, 0),
+        validUntil: clampStr(rest.validUntil, 25, 8, '2026-12-31'),
+        active: Boolean(rest.active),
+        usageCount: clampNum(rest.usageCount, 0, 1000000, 0),
+      };
+
+    case 'audit_logs': {
+      const validActions = [
+        'create',
+        'update',
+        'delete',
+        'restore',
+        'reconcile',
+        'cancel',
+        'verify_payment',
+      ];
+      return {
+        ownerId,
+        entityType: clampStr(rest.entityType, 50, 1, 'catering_orders'),
+        entityId: clampStr(rest.entityId, 128, 1, 'unknown'),
+        entityLabel: clampStr(rest.entityLabel, 200, 1, 'Dokumen'),
+        action: validActions.includes(String(rest.action)) ? String(rest.action) : 'update',
+        actorUid: clampStr(rest.actorUid, 128, 1, ownerId),
+        actorName: clampStr(rest.actorName, 100, 1, 'Administrator'),
+        actorRole: clampStr(rest.actorRole, 60, 1, 'Super Admin'),
+        details: clampStr(rest.details, 500, 1, 'Perubahan data'),
+        timestampIso: clampStr(rest.timestampIso, 40, 8, new Date().toISOString()),
+      };
+    }
+
+    default:
+      return { ...rest, ownerId };
   }
 }
 
-export function subscribeErpCollections(
-  uid: string,
-  callbacks: {
-    onMenuItems: (items: MenuItem[]) => void;
-    onCateringOrders: (items: CateringOrder[]) => void;
-    onCustomers: (items: CustomerRecord[]) => void;
-    onProductionBatches: (items: ProductionBatch[]) => void;
-    onSchools: (items: SchoolRecord[]) => void;
-    onSchoolDeliveries: (items: SchoolDelivery[]) => void;
-    onFinanceEntries: (items: FinanceEntry[]) => void;
-    onInventoryItems: (items: InventoryItem[]) => void;
-    onPromotions: (items: PromotionItem[]) => void;
-    onUsers: (items: UserProfileRecord[]) => void;
-  }
-): () => void {
-  const unsubs: Array<() => void> = [];
+export function buildAuditLogPayload(
+  ownerId: string,
+  entityType: AuditLogEntry['entityType'],
+  entityId: string,
+  action: AuditLogEntry['action'],
+  actor: AuditActorContext
+): Omit<AuditLogEntry, 'id'> {
+  return {
+    ownerId: sanitizeId(ownerId),
+    entityType,
+    entityId: sanitizeId(entityId),
+    entityLabel: clampStr(actor.entityLabel || entityId, 200, 1, entityId),
+    action,
+    actorUid: clampStr(actor.actorUid || ownerId, 128, 1, ownerId),
+    actorName: clampStr(actor.actorName, 100, 1, 'Administrator'),
+    actorRole: clampStr(actor.actorRole, 60, 1, 'Super Admin'),
+    details: clampStr(actor.details || `${action} on ${entityType}/${entityId}`, 500, 1, '-'),
+    timestampIso: new Date().toISOString(),
+  };
+}
 
-  const listen = <T>(colName: string, setter: (items: T[]) => void) => {
-    const q = query(collection(db, colName), where('ownerId', '==', uid));
+function hydrateOrderRow(id: string, raw: Record<string, unknown>): CateringOrder {
+  let statusHistory = Array.isArray(raw.statusHistory) ? raw.statusHistory : undefined;
+  if (!statusHistory && typeof raw.statusHistoryJson === 'string' && raw.statusHistoryJson) {
+    try {
+      const parsed = JSON.parse(raw.statusHistoryJson);
+      if (Array.isArray(parsed)) statusHistory = parsed;
+    } catch {
+      // Ignore malformed JSON
+    }
+  }
+  return {
+    id,
+    ...(raw as object),
+    statusHistory,
+  } as CateringOrder;
+}
+
+export interface SubscribeErpOptions {
+  limitPerCollection?: number;
+  onSyncStatusChange?: (status: SyncStatus, errorMessage?: string) => void;
+  onHasMoreChange?: (hasMore: boolean) => void;
+  onMenuItems: (items: MenuItem[]) => void;
+  onCateringOrders: (items: CateringOrder[]) => void;
+  onCustomers: (items: CustomerRecord[]) => void;
+  onProductionBatches: (items: ProductionBatch[]) => void;
+  onSchools: (items: SchoolRecord[]) => void;
+  onSchoolDeliveries: (items: SchoolDelivery[]) => void;
+  onFinanceEntries: (items: FinanceEntry[]) => void;
+  onInventoryItems: (items: InventoryItem[]) => void;
+  onPromotions: (items: PromotionItem[]) => void;
+  onUsers: (items: UserProfileRecord[]) => void;
+  onAuditLogs?: (items: AuditLogEntry[]) => void;
+}
+
+export function subscribeErpCollections(uid: string, options: SubscribeErpOptions): () => void {
+  const unsubs: Array<() => void> = [];
+  const cleanLimit = Math.max(50, Math.min(1000, options.limitPerCollection || 200));
+
+  const pendingState = new Map<string, boolean>();
+  const hasMoreState = new Map<string, boolean>();
+
+  options.onSyncStatusChange?.('connecting');
+
+  const evaluateSyncStatus = () => {
+    const anyPending = Array.from(pendingState.values()).some(Boolean);
+    options.onSyncStatusChange?.(anyPending ? 'pending' : 'synced');
+    const anyMore = Array.from(hasMoreState.values()).some(Boolean);
+    options.onHasMoreChange?.(anyMore);
+  };
+
+  const listen = <T>(
+    colName: string,
+    setter: (items: T[]) => void,
+    mapper?: (id: string, raw: Record<string, unknown>) => T
+  ) => {
+    const q = query(collection(db, colName), where('ownerId', '==', uid), limit(cleanLimit));
     const unsub = onSnapshot(
       q,
+      { includeMetadataChanges: true },
       (snap) => {
-        if (snap.empty) return;
-        const rows = snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) } as T));
+        // CRITICAL: Always emit exact Firestore snapshot even when snap.empty === true!
+        const rows = snap.docs.map((d) =>
+          mapper
+            ? mapper(d.id, d.data() as Record<string, unknown>)
+            : ({ id: d.id, ...(d.data() as object) } as T)
+        );
         setter(rows);
+        pendingState.set(colName, snap.metadata.hasPendingWrites);
+        hasMoreState.set(colName, snap.docs.length >= cleanLimit);
+        evaluateSyncStatus();
       },
       (error) => {
-        handleFirestoreError(error, OperationType.LIST, colName);
+        options.onSyncStatusChange?.('error', error.message || `Gagal sinkronisasi ${colName}`);
+        console.error(`Snapshot error on ${colName}:`, error);
       }
     );
     unsubs.push(unsub);
   };
 
-  listen<MenuItem>('menu_items', callbacks.onMenuItems);
-  listen<CateringOrder>('catering_orders', callbacks.onCateringOrders);
-  listen<CustomerRecord>('customers', callbacks.onCustomers);
-  listen<ProductionBatch>('production_batches', callbacks.onProductionBatches);
-  listen<SchoolRecord>('schools', callbacks.onSchools);
-  listen<SchoolDelivery>('school_deliveries', callbacks.onSchoolDeliveries);
-  listen<FinanceEntry>('finance_entries', callbacks.onFinanceEntries);
-  listen<InventoryItem>('inventory_items', callbacks.onInventoryItems);
-  listen<PromotionItem>('promotions', callbacks.onPromotions);
-  listen<UserProfileRecord>('users', callbacks.onUsers);
+  listen<MenuItem>('menu_items', options.onMenuItems);
+  listen<CateringOrder>('catering_orders', options.onCateringOrders, hydrateOrderRow);
+  listen<CustomerRecord>('customers', options.onCustomers);
+  listen<ProductionBatch>('production_batches', options.onProductionBatches);
+  listen<SchoolRecord>('schools', options.onSchools);
+  listen<SchoolDelivery>('school_deliveries', options.onSchoolDeliveries);
+  listen<FinanceEntry>('finance_entries', options.onFinanceEntries);
+  listen<InventoryItem>('inventory_items', options.onInventoryItems);
+  listen<PromotionItem>('promotions', options.onPromotions);
+  listen<UserProfileRecord>('users', options.onUsers);
+
+  if (options.onAuditLogs) {
+    listen<AuditLogEntry>('audit_logs', (rows) => {
+      const sorted = [...rows].sort((a, b) =>
+        String(b.timestampIso || '').localeCompare(String(a.timestampIso || ''))
+      );
+      options.onAuditLogs?.(sorted);
+    });
+  }
 
   return () => {
     unsubs.forEach((u) => u());
@@ -292,74 +463,224 @@ export function subscribeErpCollections(
 export async function saveCloudDocument(
   colName: string,
   docId: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  auditContext?: AuditActorContext
 ): Promise<void> {
   const cleanId = sanitizeId(docId);
+  const path = `${colName}/${cleanId}`;
   try {
     const now = serverTimestamp();
-    const { id: _ignoreId, ...rest } = payload;
+    const {
+      id: _ignoreId,
+      createdAt: _ignoreCreatedAt,
+      updatedAt: _ignoreUpdatedAt,
+      statusHistory: _ignoreHistoryArr,
+      ...rest
+    } = payload;
+    const sanitizedPayload = sanitizePayload(
+      colName,
+      { ...rest, statusHistory: payload.statusHistory },
+      String(rest.ownerId || 'admin-workspace-uid')
+    );
+    const docRef = doc(db, colName, cleanId);
 
-    let sanitizedPayload: Record<string, unknown> = { ...rest };
-
-    if (colName === 'catering_orders') {
-      sanitizedPayload = {
-        ownerId: String(rest.ownerId || 'admin-workspace-uid'),
-        orderNumber: clampStr(String(rest.orderNumber || 'ORD-001'), 40, 3, 'ORD-001'),
-        customerName: clampStr(String(rest.customerName || 'Pelanggan'), 120),
-        whatsapp: clampStr(String(rest.whatsapp || '0812000000'), 30, 5, '0812000000'),
-        orderDate: clampStr(String(rest.orderDate || '2026-11-16'), 25, 8, '2026-11-16'),
-        deliveryDate: clampStr(String(rest.deliveryDate || '2026-11-16'), 25, 8, '2026-11-16'),
-        eventType: clampStr(String(rest.eventType || 'Nasi kotak'), 60),
-        packageName: clampStr(String(rest.packageName || 'Paket Catering'), 120),
-        portions: Math.max(1, Number(rest.portions) || 1),
-        unitPrice: Math.max(0, Number(rest.unitPrice) || 0),
-        discount: Math.max(0, Number(rest.discount) || 0),
-        totalPayment: Math.max(0, Number(rest.totalPayment) || 0),
-        downPayment: Math.max(0, Number(rest.downPayment) || 0),
-        remainingBalance: Math.max(0, Number(rest.remainingBalance) || 0),
-        paymentStatus: rest.paymentStatus || 'Belum Bayar',
-        status: rest.status || 'Pesanan baru',
-        notes: clampStr(String(rest.notes || ''), 400, 0, ''),
-      };
-    } else if (colName === 'menu_items') {
-      sanitizedPayload = {
-        ownerId: String(rest.ownerId || 'admin-workspace-uid'),
-        name: clampStr(String(rest.name || 'Menu'), 120),
-        category: clampStr(String(rest.category || 'Nasi kotak'), 60),
-        packageName: clampStr(String(rest.packageName || 'Paket Standar'), 100),
-        description: clampStr(String(rest.description || '-'), 500),
-        imageUrl: clampStr(String(rest.imageUrl || '/logo.png'), 400),
-        sellingPrice: Math.max(0, Number(rest.sellingPrice) || 0),
-        costPrice: Math.max(0, Number(rest.costPrice) || 0),
-        estimatedProfit: Number(rest.estimatedProfit) || 0,
-        available: Boolean(rest.available),
-      };
-    } else if (colName === 'users') {
-      sanitizedPayload = {
-        ownerId: String(rest.ownerId || 'admin-workspace-uid'),
-        displayName: clampStr(String(rest.displayName || 'Administrator'), 120),
-        email: clampStr(String(rest.email || 'primayaadmin@gmail.com'), 150),
-        role: clampStr(String(rest.role || 'Super Admin'), 60),
-        department: clampStr(String(rest.department || 'Manajemen Pusat & Akuntansi'), 100),
-        status: rest.status === 'Nonaktif' ? 'Nonaktif' : 'Aktif',
-      };
+    let docExists = false;
+    let existingOwnerId = String(sanitizedPayload.ownerId);
+    try {
+      const existingSnap = await getDoc(docRef);
+      if (existingSnap.exists()) {
+        docExists = true;
+        const existingData = existingSnap.data();
+        if (existingData?.ownerId) {
+          existingOwnerId = String(existingData.ownerId);
+        }
+      }
+    } catch {
+      docExists = false;
     }
 
-    await setDoc(doc(db, colName, cleanId), {
-      ...sanitizedPayload,
-      createdAt: now,
-      updatedAt: now,
-    });
+    const batch = writeBatch(db);
+    if (docExists) {
+      batch.update(docRef, {
+        ...sanitizedPayload,
+        ownerId: existingOwnerId,
+        updatedAt: now,
+      });
+    } else {
+      batch.set(docRef, {
+        ...sanitizedPayload,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    if (auditContext) {
+      const auditId = sanitizeId(`log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+      const auditPayload = sanitizePayload(
+        'audit_logs',
+        buildAuditLogPayload(
+          existingOwnerId,
+          colName as AuditLogEntry['entityType'],
+          cleanId,
+          auditContext.action || (docExists ? 'update' : 'create'),
+          auditContext
+        ),
+        existingOwnerId
+      );
+      batch.set(doc(db, 'audit_logs', auditId), {
+        ...auditPayload,
+        createdAt: now,
+      });
+    }
+
+    await batch.commit();
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `${colName}/${cleanId}`);
+    handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
-export async function deleteCloudDocument(colName: string, docId: string): Promise<void> {
+export async function deleteCloudDocument(
+  colName: string,
+  docId: string,
+  ownerId: string,
+  auditContext?: AuditActorContext
+): Promise<void> {
   const cleanId = sanitizeId(docId);
+  const path = `${colName}/${cleanId}`;
   try {
-    await deleteDoc(doc(db, colName, cleanId));
+    const batch = writeBatch(db);
+    batch.delete(doc(db, colName, cleanId));
+
+    if (auditContext) {
+      const auditId = sanitizeId(`log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+      const auditPayload = sanitizePayload(
+        'audit_logs',
+        buildAuditLogPayload(
+          ownerId,
+          colName as AuditLogEntry['entityType'],
+          cleanId,
+          'delete',
+          auditContext
+        ),
+        ownerId
+      );
+      batch.set(doc(db, 'audit_logs', auditId), {
+        ...auditPayload,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
   } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, `${colName}/${cleanId}`);
+    handleFirestoreError(error, OperationType.DELETE, path);
   }
+}
+
+export async function restoreSnapshotToFirestore(
+  uid: string,
+  snapshotData: ErpStateSnapshot,
+  actor?: AuditActorContext
+): Promise<void> {
+  const now = serverTimestamp();
+  const operations: Array<() => void> = [];
+  let currentBatch = writeBatch(db);
+  let opCount = 0;
+  const batches: ReturnType<typeof writeBatch>[] = [currentBatch];
+
+  const queueOp = (fn: (b: ReturnType<typeof writeBatch>) => void) => {
+    if (opCount >= 400) {
+      currentBatch = writeBatch(db);
+      batches.push(currentBatch);
+      opCount = 0;
+    }
+    fn(currentBatch);
+    opCount += 1;
+  };
+
+  const stageCollection = async (colName: string, items: Array<{ id: string }>) => {
+    for (const item of items) {
+      const id = sanitizeId(item.id);
+      const docRef = doc(db, colName, id);
+      const payload = sanitizePayload(colName, item as unknown as Record<string, unknown>, uid);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const existingData = snap.data();
+        queueOp((b) =>
+          b.update(docRef, {
+            ...payload,
+            ownerId: String(existingData?.ownerId || payload.ownerId),
+            updatedAt: now,
+          })
+        );
+      } else {
+        queueOp((b) =>
+          b.set(docRef, {
+            ...payload,
+            createdAt: now,
+            updatedAt: now,
+          })
+        );
+      }
+    }
+  };
+
+  try {
+    await stageCollection('schools', snapshotData.schools);
+    await stageCollection('menu_items', snapshotData.menuItems);
+    await stageCollection('catering_orders', snapshotData.cateringOrders);
+    await stageCollection('customers', snapshotData.customers);
+    await stageCollection('production_batches', snapshotData.productionBatches);
+    await stageCollection('finance_entries', snapshotData.financeEntries);
+    await stageCollection('inventory_items', snapshotData.inventoryItems);
+    await stageCollection('promotions', snapshotData.promotions);
+
+    for (const b of batches) {
+      await b.commit();
+    }
+
+    // Commit school_deliveries after schools exist in Firestore
+    const delBatch = writeBatch(db);
+    for (const d of snapshotData.schoolDeliveries) {
+      const id = sanitizeId(d.id);
+      const docRef = doc(db, 'school_deliveries', id);
+      const payload = sanitizePayload('school_deliveries', d as unknown as Record<string, unknown>, uid);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const existingData = snap.data();
+        delBatch.update(docRef, {
+          ...payload,
+          ownerId: String(existingData?.ownerId || payload.ownerId),
+          updatedAt: now,
+        });
+      } else {
+        delBatch.set(docRef, {
+          ...payload,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
+    if (actor) {
+      const auditId = sanitizeId(`log-restore-${Date.now()}`);
+      const auditPayload = sanitizePayload(
+        'audit_logs',
+        buildAuditLogPayload(uid, 'backup_restore', `restore-${Date.now()}`, 'restore', {
+          ...actor,
+          entityLabel: 'Pemulihan Backup JSON Super Admin',
+          details: `Restore eksplisit: ${snapshotData.cateringOrders.length} pesanan, ${snapshotData.financeEntries.length} jurnal, ${snapshotData.schools.length} sekolah.`,
+        }),
+        uid
+      );
+      delBatch.set(doc(db, 'audit_logs', auditId), {
+        ...auditPayload,
+        createdAt: now,
+      });
+    }
+
+    await delBatch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'batch_restore');
+  }
+  void operations;
 }

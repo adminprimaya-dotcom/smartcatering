@@ -53,6 +53,7 @@ export function computeFinancialReportSummary(
     .reduce((acc, f) => acc + f.amount, 0);
 
   const accountNames: FinanceEntry['accountMethod'][] = [
+    'QRIS',
     'Bank Mandiri ERP',
     'Bank BRI Sekolah Rakyat',
     'Bank BCA Corporate',

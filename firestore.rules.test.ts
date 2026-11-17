@@ -128,6 +128,8 @@ test('Firestore rules file contains all 11 collection gates and default-deny net
   assert.ok(rulesText.includes('match /finance_entries/{entryId}'));
   assert.ok(rulesText.includes('match /inventory_items/{itemId}'));
   assert.ok(rulesText.includes('match /promotions/{promoId}'));
+  assert.ok(rulesText.includes('match /audit_logs/{logId}'));
+  assert.ok(rulesText.includes("existing().get('reconciled', false) != true"));
 });
 
 test('Dirty Dozen #1-12 payloads all return PERMISSION_DENIED', () => {

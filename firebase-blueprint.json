@@ -58,6 +58,16 @@
         "whatsapp": { "type": "string", "minLength": 5, "maxLength": 30 },
         "orderDate": { "type": "string", "minLength": 8, "maxLength": 25 },
         "deliveryDate": { "type": "string", "minLength": 8, "maxLength": 25 },
+        "deliveryTime": { "type": "string", "maxLength": 25 },
+        "deliveryAddress": { "type": "string", "maxLength": 300 },
+        "deliveryMethod": { "type": "string", "enum": ["Pengiriman ke alamat", "Ambil sendiri di lokasi dapur"], "maxLength": 40 },
+        "shippingCost": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["Transfer Bank", "QRIS", "Pembayaran Tunai"], "maxLength": 30 },
+        "paymentProofUrl": { "type": "string", "maxLength": 500 },
+        "paymentVerifiedAt": { "type": "string", "maxLength": 40 },
+        "paymentVerifiedBy": { "type": "string", "maxLength": 100 },
+        "cancellationReason": { "type": "string", "maxLength": 300 },
+        "statusHistoryJson": { "type": "string", "maxLength": 2000 },
         "eventType": { "type": "string", "minLength": 1, "maxLength": 60 },
         "packageName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "portions": { "type": "number" },
@@ -67,7 +77,7 @@
         "downPayment": { "type": "number" },
         "remainingBalance": { "type": "number" },
         "paymentStatus": { "type": "string", "enum": ["Belum Bayar", "DP Masuk", "Lunas"], "maxLength": 30 },
-        "status": { "type": "string", "enum": ["Pesanan baru", "Menunggu pembayaran", "Diproses", "Sedang diproduksi", "Siap dikirim", "Dalam pengiriman", "Selesai", "Dibatalkan"], "maxLength": 40 },
+        "status": { "type": "string", "enum": ["Pesanan baru", "Menunggu pembayaran", "DP masuk", "Diproses", "Sedang diproduksi", "Siap dikirim", "Dalam pengiriman", "Selesai", "Dibatalkan"], "maxLength": 40 },
         "notes": { "type": "string", "minLength": 0, "maxLength": 400 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -148,10 +158,14 @@
         "schoolName": { "type": "string", "minLength": 1, "maxLength": 150 },
         "menuPackage": { "type": "string", "minLength": 1, "maxLength": 150 },
         "portionsDelivered": { "type": "number" },
+        "portionsPlanned": { "type": "number" },
+        "productionBatchId": { "type": "string", "maxLength": 128 },
         "courierName": { "type": "string", "minLength": 1, "maxLength": 100 },
         "departureTime": { "type": "string", "minLength": 3, "maxLength": 20 },
         "arrivalTime": { "type": "string", "minLength": 1, "maxLength": 20 },
         "recipientName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "handoverProofNote": { "type": "string", "maxLength": 400 },
+        "handoverProofUrl": { "type": "string", "maxLength": 500 },
         "status": { "type": "string", "enum": ["Persiapan", "Dalam Pengiriman", "Selesai", "Dibatalkan"], "maxLength": 40 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -166,12 +180,18 @@
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "transactionDate": { "type": "string", "minLength": 8, "maxLength": 25 },
         "referenceCode": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "orderRef": { "type": "string", "maxLength": 60 },
         "type": { "type": "string", "enum": ["Pendapatan Catering", "Pendapatan Sekolah Rakyat", "Pengeluaran Operasional", "Utang Supplier", "Piutang Pelanggan"], "maxLength": 40 },
         "category": { "type": "string", "minLength": 1, "maxLength": 80 },
         "description": { "type": "string", "minLength": 1, "maxLength": 300 },
         "amount": { "type": "number" },
-        "accountMethod": { "type": "string", "enum": ["Kas Tunai", "Bank Mandiri ERP", "Bank BRI Sekolah Rakyat", "Bank BCA Corporate"], "maxLength": 50 },
+        "accountMethod": { "type": "string", "enum": ["Kas Tunai", "QRIS", "Bank Mandiri ERP", "Bank BRI Sekolah Rakyat", "Bank BCA Corporate"], "maxLength": 50 },
         "settlementStatus": { "type": "string", "enum": ["Lunas", "Belum Lunas"], "maxLength": 25 },
+        "reconciled": { "type": "boolean" },
+        "reconciledAt": { "type": "string", "maxLength": 40 },
+        "reconciledBy": { "type": "string", "maxLength": 100 },
+        "correctionNote": { "type": "string", "maxLength": 300 },
+        "auditTrailJson": { "type": "string", "maxLength": 2000 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -215,6 +235,25 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["ownerId", "promoCode", "title", "targetSegment", "discountPercent", "maxDiscountAmount", "validUntil", "active", "usageCount", "createdAt", "updatedAt"]
+    },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "Immutable operational and financial audit log record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "entityType": { "type": "string", "minLength": 1, "maxLength": 50 },
+        "entityId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "entityLabel": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "action": { "type": "string", "enum": ["create", "update", "delete", "restore", "reconcile", "cancel", "verify_payment"], "maxLength": 30 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "actorRole": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "details": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "timestampIso": { "type": "string", "minLength": 8, "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "entityType", "entityId", "entityLabel", "action", "actorUid", "actorName", "actorRole", "details", "timestampIso", "createdAt"]
     }
   },
   "firestore": {
@@ -261,6 +300,10 @@
     "/promotions/{promoId}": {
       "schema": { "$ref": "#/entities/PromotionItem" },
       "description": "Marketing promotions and voucher codes."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLogEntry" },
+      "description": "Immutable operational and financial audit trail."
     }
   }
 }

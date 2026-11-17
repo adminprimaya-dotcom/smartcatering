@@ -11,6 +11,7 @@ export type CateringCategory =
 export type OrderStatus =
   | 'Pesanan baru'
   | 'Menunggu pembayaran'
+  | 'DP masuk'
   | 'Diproses'
   | 'Sedang diproduksi'
   | 'Siap dikirim'
@@ -23,6 +24,17 @@ export type PaymentStatus = 'Belum Bayar' | 'DP Masuk' | 'Lunas';
 export type DeliveryMethodType = 'Pengiriman ke alamat' | 'Ambil sendiri di lokasi dapur';
 
 export type PaymentMethodType = 'Transfer Bank' | 'QRIS' | 'Pembayaran Tunai';
+
+export type SyncStatus = 'idle' | 'connecting' | 'synced' | 'pending' | 'error' | 'unsaved';
+
+export type AppWorkspaceMode = 'production' | 'demo';
+
+export interface OrderStatusHistoryItem {
+  status: OrderStatus;
+  timestamp: string;
+  actor: string;
+  note?: string;
+}
 
 export interface CartOrderItem {
   menuId: string;
@@ -71,6 +83,12 @@ export interface CateringOrder {
   deliveryMethod?: DeliveryMethodType;
   shippingCost?: number;
   paymentMethod?: PaymentMethodType;
+  paymentProofUrl?: string;
+  paymentVerifiedAt?: string;
+  paymentVerifiedBy?: string;
+  cancellationReason?: string;
+  statusHistory?: OrderStatusHistoryItem[];
+  statusHistoryJson?: string;
   locationLat?: number;
   locationLng?: number;
   items?: CartOrderItem[];
@@ -140,10 +158,14 @@ export interface SchoolDelivery {
   schoolName: string;
   menuPackage: string;
   portionsDelivered: number;
+  portionsPlanned?: number;
+  productionBatchId?: string;
   courierName: string;
   departureTime: string;
   arrivalTime: string;
   recipientName: string;
+  handoverProofNote?: string;
+  handoverProofUrl?: string;
   status: 'Persiapan' | 'Dalam Pengiriman' | 'Selesai' | 'Dibatalkan';
 }
 
@@ -152,6 +174,7 @@ export interface FinanceEntry {
   ownerId: string;
   transactionDate: string;
   referenceCode: string;
+  orderRef?: string;
   type:
     | 'Pendapatan Catering'
     | 'Pendapatan Sekolah Rakyat'
@@ -161,8 +184,13 @@ export interface FinanceEntry {
   category: string;
   description: string;
   amount: number;
-  accountMethod: 'Kas Tunai' | 'Bank Mandiri ERP' | 'Bank BRI Sekolah Rakyat' | 'Bank BCA Corporate';
+  accountMethod: 'Kas Tunai' | 'QRIS' | 'Bank Mandiri ERP' | 'Bank BRI Sekolah Rakyat' | 'Bank BCA Corporate';
   settlementStatus: 'Lunas' | 'Belum Lunas';
+  reconciled?: boolean;
+  reconciledAt?: string;
+  reconciledBy?: string;
+  correctionNote?: string;
+  auditTrailJson?: string;
 }
 
 export interface InventoryItem {
@@ -202,12 +230,39 @@ export interface UserProfileRecord {
   status: 'Aktif' | 'Nonaktif';
 }
 
+export interface AuditLogEntry {
+  id: string;
+  ownerId: string;
+  entityType:
+    | 'menu_items'
+    | 'catering_orders'
+    | 'customers'
+    | 'production_batches'
+    | 'schools'
+    | 'school_deliveries'
+    | 'finance_entries'
+    | 'inventory_items'
+    | 'promotions'
+    | 'users'
+    | 'backup_restore';
+  entityId: string;
+  entityLabel: string;
+  action: 'create' | 'update' | 'delete' | 'restore' | 'reconcile' | 'cancel' | 'verify_payment';
+  actorUid: string;
+  actorName: string;
+  actorRole: string;
+  details: string;
+  timestampIso: string;
+}
+
 export interface SiteContentSettings {
   brandName: string;
   brandTagline: string;
   erpSystemTitle: string;
   erpHeaderSubtitle: string;
-  accentTheme: 'emerald' | 'navy' | 'teal' | 'amber';
+  accentTheme: 'flora-elegan' | 'emerald' | 'navy' | 'teal' | 'amber';
+  themeOrnamentEnabled?: boolean;
+  themeOrnamentUrl?: string;
   heroBadge: string;
   heroTitle: string;
   heroDescription: string;
@@ -249,8 +304,38 @@ export interface SiteContentSettings {
   bankName: string;
   bankAccountNumber: string;
   bankAccountHolder: string;
+  bank2Name: string;
+  bank2AccountNumber: string;
+  bank2AccountHolder: string;
+  qrisMerchantName: string;
+  qrisNmid: string;
+  qrisImageUrl: string;
   footerCopyright: string;
   updatedAt?: string;
+}
+
+export interface PaidNotificationItem {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  customerName: string;
+  whatsapp: string;
+  amount: number;
+  paymentMethod: PaymentMethodType;
+  paidAt: string;
+  verifiedBy: string;
+  note: string;
+  isRead: boolean;
+}
+
+export interface MusicTrack {
+  id: string;
+  title: string;
+  audioUrl: string;
+  sourceType: 'builtin' | 'upload' | 'url';
+  fileName?: string;
+  isActive: boolean;
+  createdAt: string;
 }
 
 export interface ErpStateSnapshot {
@@ -265,4 +350,3 @@ export interface ErpStateSnapshot {
   promotions: PromotionItem[];
   users: UserProfileRecord[];
 }
-

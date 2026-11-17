@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import {
+  CheckCircle2,
   ChefHat,
+  Download,
   Edit3,
   FileText,
   Plus,
@@ -17,7 +19,10 @@ import {
   CustomerRecord,
   MenuItem,
   OrderStatus,
+  OrderStatusHistoryItem,
+  PaymentMethodType,
   ProductionBatch,
+  SiteContentSettings,
 } from '../types/erp';
 import {
   calculateMenuProfit,
@@ -26,8 +31,10 @@ import {
   formatRupiah,
   formatTanggalIndonesia,
   generateOrderNumber,
+  getJakartaTodayIso,
 } from '../utils/calculations';
-import { GENERATED_IMAGES } from '../data/seedData';
+import { DEFAULT_SITE_SETTINGS, GENERATED_IMAGES } from '../data/seedData';
+import { downloadOrderInvoicePdf } from '../utils/invoicePdfExport';
 
 const CATERING_CATEGORIES: CateringCategory[] = [
   'Catering harian',
@@ -43,6 +50,7 @@ const CATERING_CATEGORIES: CateringCategory[] = [
 const ORDER_STATUSES: OrderStatus[] = [
   'Pesanan baru',
   'Menunggu pembayaran',
+  'DP masuk',
   'Diproses',
   'Sedang diproduksi',
   'Siap dikirim',
@@ -57,14 +65,19 @@ interface CateringModuleProps {
   orders: CateringOrder[];
   customers: CustomerRecord[];
   productionBatches: ProductionBatch[];
+  siteSettings?: SiteContentSettings;
+  hasMoreCloudData?: boolean;
+  onLoadMore?: () => void;
   onSaveMenu: (item: MenuItem) => Promise<void>;
   onDeleteMenu: (id: string) => Promise<void>;
   onSaveOrder: (order: CateringOrder) => Promise<void>;
+  onCancelOrder?: (order: CateringOrder) => Promise<void>;
   onDeleteOrder: (id: string) => Promise<void>;
   onSaveCustomer: (customer: CustomerRecord) => Promise<void>;
   onDeleteCustomer: (id: string) => Promise<void>;
   onSaveProduction: (batch: ProductionBatch) => Promise<void>;
   onDeleteProduction: (id: string) => Promise<void>;
+  onConfirmOrderPaid?: (order: CateringOrder) => Promise<void>;
 }
 
 export const CateringModule: React.FC<CateringModuleProps> = ({
@@ -73,16 +86,21 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
   orders,
   customers,
   productionBatches,
+  siteSettings = DEFAULT_SITE_SETTINGS,
+  hasMoreCloudData = false,
+  onLoadMore,
   onSaveMenu,
   onDeleteMenu,
   onSaveOrder,
+  onCancelOrder,
   onDeleteOrder,
   onSaveCustomer,
   onDeleteCustomer,
   onSaveProduction,
   onDeleteProduction,
+  onConfirmOrderPaid,
 }) => {
-  const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'customers' | 'production'>('menu');
+  const [activeTab, setActiveTab] = useState<'menu' | 'orders' | 'customers' | 'production'>('orders');
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('Semua');
   const [statusFilter, setStatusFilter] = useState<string>('Semua');
@@ -101,12 +119,15 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
   const [formFeedback, setFormFeedback] = useState('');
 
   // Order Form State
+  const todayIso = getJakartaTodayIso();
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [orderCustomerName, setOrderCustomerName] = useState('');
   const [orderWhatsapp, setOrderWhatsapp] = useState('');
-  const [orderDate, setOrderDate] = useState('2026-11-16');
-  const [deliveryDate, setDeliveryDate] = useState('2026-11-18');
+  const [orderDate, setOrderDate] = useState(todayIso);
+  const [deliveryDate, setDeliveryDate] = useState(todayIso);
+  const [orderDeliveryTime, setOrderDeliveryTime] = useState('09:00 WIB');
+  const [orderDeliveryAddress, setOrderDeliveryAddress] = useState('');
   const [orderEventType, setOrderEventType] = useState<CateringCategory>('Catering rapat');
   const [orderPackageName, setOrderPackageName] = useState(
     menuItems[0]?.name || 'Nasi Kotak Ayam Bakar Madu Nusantara'
@@ -114,10 +135,15 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
   const [orderPortions, setOrderPortions] = useState(150);
   const [orderUnitPrice, setOrderUnitPrice] = useState(38000);
   const [orderDiscount, setOrderDiscount] = useState(0);
-  const [orderDp, setOrderDp] = useState(2500000);
+  const [orderShippingCost, setOrderShippingCost] = useState(0);
+  const [orderDp, setOrderDp] = useState(0);
+  const [orderPaymentMethod, setOrderPaymentMethod] = useState<PaymentMethodType>('Transfer Bank');
+  const [orderPaymentProofUrl, setOrderPaymentProofUrl] = useState('');
   const [orderStatus, setOrderStatus] = useState<OrderStatus>('Pesanan baru');
   const [orderNotes, setOrderNotes] = useState('');
   const [selectedInvoiceOrder, setSelectedInvoiceOrder] = useState<CateringOrder | null>(null);
+  const [editingPaymentOrderId, setEditingPaymentOrderId] = useState<string | null>(null);
+  const [editingPaymentAmount, setEditingPaymentAmount] = useState<number>(0);
 
   // Customer Form State
   const [showCustomerForm, setShowCustomerForm] = useState(false);
@@ -158,69 +184,110 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
     }
     const profit = calculateMenuProfit(menuSellingPrice, menuCostPrice);
     const id = editingMenuId || `menu-${Date.now()}`;
-    await onSaveMenu({
-      id,
-      ownerId,
-      name: menuName.trim(),
-      category: menuCategory,
-      packageName: menuPackage.trim() || 'Paket Standar',
-      description: menuDesc.trim(),
-      imageUrl: menuImage || GENERATED_IMAGES.nasiKotak,
-      sellingPrice: Number(menuSellingPrice),
-      costPrice: Number(menuCostPrice),
-      estimatedProfit: profit,
-      available: menuAvailable,
-    });
-    setShowMenuForm(false);
-    setEditingMenuId(null);
-    setMenuName('');
-    setMenuDesc('');
-    notify('Data produk & menu catering berhasil disimpan ke database.');
+    try {
+      await onSaveMenu({
+        id,
+        ownerId,
+        name: menuName.trim(),
+        category: menuCategory,
+        packageName: menuPackage.trim() || 'Paket Standar',
+        description: menuDesc.trim(),
+        imageUrl: menuImage || GENERATED_IMAGES.nasiKotak,
+        sellingPrice: Number(menuSellingPrice),
+        costPrice: Number(menuCostPrice),
+        estimatedProfit: profit,
+        available: menuAvailable,
+      });
+      setShowMenuForm(false);
+      setEditingMenuId(null);
+      setMenuName('');
+      setMenuDesc('');
+      notify('Data produk & menu catering berhasil disimpan ke database.');
+    } catch {
+      notify('Gagal menyimpan menu ke server. Perubahan dibatalkan.');
+    }
   };
 
-  // Order Submit
+  // Order Submit (selecting paymentMethod never auto-marks Lunas!)
   const handleOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!orderCustomerName.trim() || !orderWhatsapp.trim()) {
       notify('Nama pelanggan dan nomor WhatsApp wajib diisi.');
       return;
     }
+    const existingOrder = orders.find((o) => o.id === editingOrderId);
+    if (orderStatus === 'Dibatalkan' && existingOrder && onCancelOrder) {
+      setShowOrderForm(false);
+      await onCancelOrder(existingOrder);
+      return;
+    }
+
     const financials = calculateOrderFinancials({
       portions: orderPortions,
       unitPrice: orderUnitPrice,
       discount: orderDiscount,
+      shippingCost: orderShippingCost,
       downPayment: orderDp,
     });
     const id = editingOrderId || `ord-${Date.now()}`;
-    const existingOrder = orders.find((o) => o.id === editingOrderId);
     const orderNumber =
       existingOrder?.orderNumber || generateOrderNumber(orderDate, orders.length + 1);
 
-    await onSaveOrder({
-      id,
-      ownerId,
-      orderNumber,
-      customerName: orderCustomerName.trim(),
-      whatsapp: orderWhatsapp.trim(),
-      orderDate,
-      deliveryDate,
-      eventType: orderEventType,
-      packageName: orderPackageName,
-      portions: Number(orderPortions),
-      unitPrice: Number(orderUnitPrice),
-      discount: Number(orderDiscount),
-      totalPayment: financials.totalPayment,
-      downPayment: Number(orderDp),
-      remainingBalance: financials.remainingBalance,
-      paymentStatus: financials.paymentStatus,
-      status: orderStatus,
-      notes: orderNotes.trim() || 'Sesuai standar pesanan catering.',
-    });
-    setShowOrderForm(false);
-    setEditingOrderId(null);
-    setOrderCustomerName('');
-    setOrderWhatsapp('');
-    notify(`Pesanan ${orderNumber} berhasil disimpan.`);
+    const prevHistory: OrderStatusHistoryItem[] = existingOrder?.statusHistory || [];
+    const statusChanged = !existingOrder || existingOrder.status !== orderStatus;
+    const nextHistory: OrderStatusHistoryItem[] = statusChanged
+      ? [
+          ...prevHistory,
+          {
+            status: orderStatus,
+            timestamp: new Date().toISOString(),
+            actor: 'Admin Operasional',
+            note: existingOrder
+              ? `Status diubah dari ${existingOrder.status} ke ${orderStatus}`
+              : 'Pesanan dibuat oleh Admin',
+          },
+        ]
+      : prevHistory;
+
+    try {
+      await onSaveOrder({
+        ...(existingOrder || {}),
+        id,
+        ownerId,
+        orderNumber,
+        customerName: orderCustomerName.trim(),
+        whatsapp: orderWhatsapp.trim(),
+        orderDate,
+        deliveryDate,
+        deliveryTime: orderDeliveryTime.trim() || '09:00 WIB',
+        deliveryAddress: orderDeliveryAddress.trim() || '-',
+        shippingCost: Number(orderShippingCost) || 0,
+        paymentMethod: orderPaymentMethod,
+        paymentProofUrl: orderPaymentProofUrl.trim().slice(0, 500),
+        eventType: orderEventType,
+        packageName: orderPackageName,
+        portions: Number(orderPortions),
+        unitPrice: Number(orderUnitPrice),
+        discount: Number(orderDiscount),
+        totalPayment: financials.totalPayment,
+        downPayment: Number(orderDp),
+        remainingBalance: financials.remainingBalance,
+        paymentStatus: financials.paymentStatus,
+        status: orderStatus,
+        statusHistory: nextHistory,
+        statusHistoryJson: JSON.stringify(nextHistory).slice(0, 2000),
+        notes: orderNotes.trim() || 'Sesuai standar pesanan catering.',
+      });
+      setShowOrderForm(false);
+      setEditingOrderId(null);
+      setOrderCustomerName('');
+      setOrderWhatsapp('');
+      setOrderDeliveryAddress('');
+      setOrderPaymentProofUrl('');
+      notify(`Pesanan ${orderNumber} berhasil disimpan ke server.`);
+    } catch {
+      notify('Gagal menyimpan pesanan ke server. Perubahan dibatalkan.');
+    }
   };
 
   // Customer Submit
@@ -231,25 +298,29 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
       return;
     }
     const id = editingCustomerId || `cust-${Date.now()}`;
-    await onSaveCustomer({
-      id,
-      ownerId,
-      name: custName.trim(),
-      address: custAddress.trim(),
-      phone: custPhone.trim(),
-      locationLat: Number(custLat),
-      locationLng: Number(custLng),
-      totalPurchases: Number(custTotalPurchases),
-      transactionCount: Number(custTxCount),
-      isActive: custActive,
-      isPriority: custPriority,
-    });
-    setShowCustomerForm(false);
-    setEditingCustomerId(null);
-    setCustName('');
-    setCustAddress('');
-    setCustPhone('');
-    notify('Data pelanggan berhasil diperbarui.');
+    try {
+      await onSaveCustomer({
+        id,
+        ownerId,
+        name: custName.trim(),
+        address: custAddress.trim(),
+        phone: custPhone.trim(),
+        locationLat: Number(custLat),
+        locationLng: Number(custLng),
+        totalPurchases: Number(custTotalPurchases),
+        transactionCount: Number(custTxCount),
+        isActive: custActive,
+        isPriority: custPriority,
+      });
+      setShowCustomerForm(false);
+      setEditingCustomerId(null);
+      setCustName('');
+      setCustAddress('');
+      setCustPhone('');
+      notify('Data pelanggan berhasil diperbarui.');
+    } catch {
+      notify('Gagal menyimpan data pelanggan ke server.');
+    }
   };
 
   // Production Submit
@@ -261,22 +332,26 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
     }
     const calc = calculateRawMaterialRequirement(prodPortions, prodChannel);
     const id = `prod-${Date.now()}`;
-    await onSaveProduction({
-      id,
-      ownerId,
-      productionDate: prodDate,
-      menuName: prodMenuName.trim(),
-      targetChannel: prodChannel,
-      portions: Number(prodPortions),
-      recipeSummary: calc.recipeSummary,
-      rawMaterialNeed: calc.rawMaterialNeed,
-      productionCost: calc.estimatedProductionCost,
-      officerName: prodOfficer.trim(),
-      status: prodStatus,
-      documentationNote: prodDocNote.trim() || 'Sesuai prosedur QC dapur.',
-    });
-    setShowProdForm(false);
-    notify('Jadwal produksi makanan & kalkulasi bahan baku berhasil disimpan.');
+    try {
+      await onSaveProduction({
+        id,
+        ownerId,
+        productionDate: prodDate,
+        menuName: prodMenuName.trim(),
+        targetChannel: prodChannel,
+        portions: Number(prodPortions),
+        recipeSummary: calc.recipeSummary,
+        rawMaterialNeed: calc.rawMaterialNeed,
+        productionCost: calc.estimatedProductionCost,
+        officerName: prodOfficer.trim(),
+        status: prodStatus,
+        documentationNote: prodDocNote.trim() || 'Sesuai prosedur QC dapur.',
+      });
+      setShowProdForm(false);
+      notify('Jadwal produksi makanan & kalkulasi bahan baku berhasil disimpan.');
+    } catch {
+      notify('Gagal menyimpan jadwal produksi ke server.');
+    }
   };
 
   const filteredMenus = menuItems.filter((m) => {
@@ -308,6 +383,7 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
     portions: orderPortions,
     unitPrice: orderUnitPrice,
     discount: orderDiscount,
+    shippingCost: orderShippingCost,
     downPayment: orderDp,
   });
 
@@ -316,13 +392,13 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
   return (
     <div className="space-y-6">
       {/* Header & Sub-Navigation Tabs */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3.5">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
         <div>
           <h1 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight">
-            Modul 1 — Manajemen Usaha Catering Komersial
+            Kelola Pesanan, Menu Makanan & Dapur
           </h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Katalog Menu 8 Kategori, Pesanan Otomatis, Database Pelanggan & Produksi Dapur Sentral
+          <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+            Konfirmasi pesanan yang sudah dibayar, atur daftar menu makanan, data pelanggan, dan jadwal masak harian.
           </p>
         </div>
 
@@ -330,58 +406,58 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
           <button
             type="button"
             role="tab"
-            aria-selected={activeTab === 'menu'}
-            onClick={() => setActiveTab('menu')}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
-              activeTab === 'menu'
-                ? 'bg-emerald-700 text-white shadow-xs'
+            aria-selected={activeTab === 'orders'}
+            onClick={() => setActiveTab('orders')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+              activeTab === 'orders'
+                ? 'bg-white text-slate-900 shadow-2xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <UtensilsCrossed className="h-3.5 w-3.5" />
-            <span>1. Produk & Menu ({menuItems.length})</span>
+            <ShoppingBag className="h-3.5 w-3.5 text-emerald-700" />
+            <span>Daftar Pesanan ({orders.length})</span>
           </button>
           <button
             type="button"
             role="tab"
-            aria-selected={activeTab === 'orders'}
-            onClick={() => setActiveTab('orders')}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
-              activeTab === 'orders'
-                ? 'bg-emerald-700 text-white shadow-xs'
+            aria-selected={activeTab === 'menu'}
+            onClick={() => setActiveTab('menu')}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+              activeTab === 'menu'
+                ? 'bg-white text-slate-900 shadow-2xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <ShoppingBag className="h-3.5 w-3.5" />
-            <span>2. Pesanan Catering ({orders.length})</span>
+            <UtensilsCrossed className="h-3.5 w-3.5 text-emerald-700" />
+            <span>Menu Makanan ({menuItems.length})</span>
           </button>
           <button
             type="button"
             role="tab"
             aria-selected={activeTab === 'customers'}
             onClick={() => setActiveTab('customers')}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'customers'
-                ? 'bg-emerald-700 text-white shadow-xs'
+                ? 'bg-white text-slate-900 shadow-2xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <Users className="h-3.5 w-3.5" />
-            <span>3. Pelanggan ({customers.length})</span>
+            <Users className="h-3.5 w-3.5 text-emerald-700" />
+            <span>Data Pelanggan ({customers.length})</span>
           </button>
           <button
             type="button"
             role="tab"
             aria-selected={activeTab === 'production'}
             onClick={() => setActiveTab('production')}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'production'
-                ? 'bg-emerald-700 text-white shadow-xs'
+                ? 'bg-white text-slate-900 shadow-2xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <ChefHat className="h-3.5 w-3.5" />
-            <span>4. Produksi & Resep ({productionBatches.length})</span>
+            <ChefHat className="h-3.5 w-3.5 text-emerald-700" />
+            <span>Jadwal Masak Dapur ({productionBatches.length})</span>
           </button>
         </div>
       </div>
@@ -845,6 +921,33 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
                 </div>
 
                 <div>
+                  <label htmlFor="ord-deliv-time" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Jam Pengiriman Acara
+                  </label>
+                  <input
+                    id="ord-deliv-time"
+                    type="text"
+                    value={orderDeliveryTime}
+                    onChange={(e) => setOrderDeliveryTime(e.target.value)}
+                    placeholder="09:00 WIB"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label htmlFor="ord-deliv-addr" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Alamat Pengiriman Lengkap
+                  </label>
+                  <input
+                    id="ord-deliv-addr"
+                    type="text"
+                    value={orderDeliveryAddress}
+                    onChange={(e) => setOrderDeliveryAddress(e.target.value)}
+                    placeholder="Gedung, Jalan, Kelurahan, Kecamatan, Kota..."
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
+
+                <div>
                   <label htmlFor="ord-portions" className="block text-xs font-semibold text-slate-700 mb-1">
                     Jumlah Porsi
                   </label>
@@ -883,10 +986,23 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono tabular-nums text-slate-900"
                   />
                 </div>
+                <div>
+                  <label htmlFor="ord-ship" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Biaya Pengiriman (IDR)
+                  </label>
+                  <input
+                    id="ord-ship"
+                    type="number"
+                    min={0}
+                    value={orderShippingCost}
+                    onChange={(e) => setOrderShippingCost(Number(e.target.value))}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono tabular-nums text-slate-900"
+                  />
+                </div>
 
                 <div>
                   <label htmlFor="ord-dp" className="block text-xs font-semibold text-slate-700 mb-1">
-                    Uang Muka / DP Diterima (IDR)
+                    Uang Muka / DP Terverifikasi (IDR)
                   </label>
                   <input
                     id="ord-dp"
@@ -895,6 +1011,34 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
                     value={orderDp}
                     onChange={(e) => setOrderDp(Number(e.target.value))}
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono tabular-nums text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="ord-paymethod" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Metode Pembayaran (Tidak Auto-Lunas)
+                  </label>
+                  <select
+                    id="ord-paymethod"
+                    value={orderPaymentMethod}
+                    onChange={(e) => setOrderPaymentMethod(e.target.value as PaymentMethodType)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
+                  >
+                    <option value="Transfer Bank">Transfer Bank</option>
+                    <option value="QRIS">QRIS</option>
+                    <option value="Pembayaran Tunai">Pembayaran Tunai</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="ord-proof" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Referensi / URL Bukti Pembayaran
+                  </label>
+                  <input
+                    id="ord-proof"
+                    type="text"
+                    value={orderPaymentProofUrl}
+                    onChange={(e) => setOrderPaymentProofUrl(e.target.value)}
+                    placeholder="https://... atau No. Referensi Mutasi"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
                   />
                 </div>
                 <div>
@@ -932,13 +1076,13 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
               {/* Automatic Financial Calculation Summary */}
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs">
                 <div>
-                  <span className="text-slate-500 block">Total Pembayaran Bersih</span>
+                  <span className="text-slate-500 block">Total Pembayaran (+ Ongkir)</span>
                   <span className="font-mono tabular-nums font-bold text-slate-900 text-sm">
                     {formatRupiah(previewFinancials.totalPayment)}
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Uang Muka (DP)</span>
+                  <span className="text-slate-500 block">Uang Muka / Terbayar</span>
                   <span className="font-mono tabular-nums font-semibold text-emerald-700 text-sm">
                     {formatRupiah(orderDp)}
                   </span>
@@ -950,7 +1094,7 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Status Pembayaran Otomatis</span>
+                  <span className="text-slate-500 block">Status Pembayaran Terverifikasi</span>
                   <span className="font-bold text-slate-900 text-sm">
                     {previewFinancials.paymentStatus}
                   </span>
@@ -960,7 +1104,10 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowOrderForm(false)}
+                  onClick={() => {
+                    setShowOrderForm(false);
+                    setEditingOrderId(null);
+                  }}
                   className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                 >
                   Batal
@@ -975,60 +1122,280 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
             </form>
           )}
 
-          {/* Invoice Preview Modal/Card if selected */}
+          {/* Detail Pesanan & Pratinjau Invoice */}
           {selectedInvoiceOrder && (
-            <div className="rounded-xl border border-slate-300 bg-white p-6 space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+            <div className="rounded-xl border border-slate-300 bg-white p-6 space-y-5 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
                   <h3 className="text-base font-bold text-slate-900">
-                    INVOICE RESMI PESANAN CATERING — {selectedInvoiceOrder.orderNumber}
+                    Detail Pesanan &amp; Invoice — {selectedInvoiceOrder.orderNumber}
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Smart Catering & Sekolah Rakyat Management System · NPWP Korporasi Terdaftar
+                    {siteSettings.brandName} · Status Pesanan: {selectedInvoiceOrder.status} · Pembayaran:{' '}
+                    <span className="font-semibold text-slate-800">
+                      {selectedInvoiceOrder.paymentStatus}
+                    </span>
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      downloadOrderInvoicePdf(selectedInvoiceOrder, siteSettings);
+                      notify(
+                        `Invoice PDF ${selectedInvoiceOrder.orderNumber} berhasil diunduh.`
+                      );
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 px-3.5 py-2 text-xs font-bold text-white transition-colors whitespace-nowrap"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    <span>Unduh Invoice</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => window.print()}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 px-3 py-2 text-xs font-semibold text-white transition-colors whitespace-nowrap"
                   >
-                    <Printer className="h-3.5 w-3.5" /> Cetak Invoice
+                    <Printer className="h-3.5 w-3.5" />
+                    <span>Cetak</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setSelectedInvoiceOrder(null)}
-                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                    className="rounded-lg border border-slate-300 hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 whitespace-nowrap"
                   >
                     Tutup
                   </button>
                 </div>
               </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                <div>
+                <div className="space-y-1">
                   <span className="text-slate-500 block">Ditagihkan Kepada:</span>
-                  <span className="font-bold text-slate-900">{selectedInvoiceOrder.customerName}</span>
-                  <span className="block text-slate-600">WA: {selectedInvoiceOrder.whatsapp}</span>
+                  <span className="font-bold text-slate-900 block">
+                    {selectedInvoiceOrder.customerName}
+                  </span>
+                  <span className="block font-mono text-slate-600">
+                    WA: {selectedInvoiceOrder.whatsapp}
+                  </span>
+                  {selectedInvoiceOrder.deliveryAddress && (
+                    <span className="block text-slate-600">
+                      Alamat: {selectedInvoiceOrder.deliveryAddress}
+                    </span>
+                  )}
                 </div>
-                <div>
-                  <span className="text-slate-500 block">Jadwal Acara & Paket:</span>
-                  <span className="font-semibold text-slate-900">{selectedInvoiceOrder.eventType}</span>
+
+                <div className="space-y-1">
+                  <span className="text-slate-500 block">Jadwal Acara &amp; Pengiriman:</span>
+                  <span className="font-semibold text-slate-900 block">
+                    {selectedInvoiceOrder.eventType} ·{' '}
+                    {selectedInvoiceOrder.portions.toLocaleString('id-ID')} porsi
+                  </span>
                   <span className="block text-slate-600">
                     Kirim: {formatTanggalIndonesia(selectedInvoiceOrder.deliveryDate)}
+                    {selectedInvoiceOrder.deliveryTime
+                      ? ` · ${selectedInvoiceOrder.deliveryTime}`
+                      : ''}
                   </span>
+                  <span className="block text-slate-600">
+                    Metode Bayar: {selectedInvoiceOrder.paymentMethod || 'Transfer Bank'}
+                  </span>
+                  {selectedInvoiceOrder.paymentProofUrl && (
+                    <span className="block text-emerald-700 font-medium break-all">
+                      Bukti Bayar: {selectedInvoiceOrder.paymentProofUrl}
+                    </span>
+                  )}
+                  {selectedInvoiceOrder.paymentVerifiedBy && (
+                    <span className="block text-emerald-800 font-semibold">
+                      Verifikasi: {selectedInvoiceOrder.paymentVerifiedBy}
+                    </span>
+                  )}
                 </div>
-                <div>
+
+                <div className="space-y-1">
                   <span className="text-slate-500 block">Ringkasan Tagihan:</span>
-                  <span className="font-mono tabular-nums font-bold text-slate-900">
+                  {(selectedInvoiceOrder.shippingCost || 0) > 0 && (
+                    <span className="block font-mono tabular-nums text-slate-600">
+                      Ongkir: {formatRupiah(selectedInvoiceOrder.shippingCost || 0)}
+                    </span>
+                  )}
+                  <span className="font-mono tabular-nums font-bold text-slate-900 block">
                     Total: {formatRupiah(selectedInvoiceOrder.totalPayment)}
                   </span>
-                  <span className="block font-mono tabular-nums text-emerald-700">
-                    DP: {formatRupiah(selectedInvoiceOrder.downPayment)} · Sisa: {formatRupiah(selectedInvoiceOrder.remainingBalance)}
+                  <span className="block font-mono tabular-nums text-emerald-700 font-semibold">
+                    Dibayar/DP:{' '}
+                    {formatRupiah(
+                      selectedInvoiceOrder.paymentStatus === 'Lunas'
+                        ? selectedInvoiceOrder.totalPayment
+                        : Math.max(0, selectedInvoiceOrder.downPayment || 0)
+                    )}
+                  </span>
+                  <span
+                    className={`block font-mono tabular-nums font-bold ${
+                      selectedInvoiceOrder.paymentStatus === 'Lunas'
+                        ? 'text-emerald-700'
+                        : 'text-amber-700'
+                    }`}
+                  >
+                    Sisa Utang:{' '}
+                    {selectedInvoiceOrder.paymentStatus === 'Lunas'
+                      ? 'Rp 0 (Lunas)'
+                      : formatRupiah(
+                          Math.max(
+                            0,
+                            selectedInvoiceOrder.totalPayment -
+                              Math.max(0, selectedInvoiceOrder.downPayment || 0)
+                          )
+                        )}
                   </span>
                 </div>
               </div>
+
+              {selectedInvoiceOrder.status === 'Dibatalkan' &&
+                selectedInvoiceOrder.cancellationReason && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-900">
+                    <strong>Alasan Pembatalan:</strong> {selectedInvoiceOrder.cancellationReason}
+                  </div>
+                )}
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 text-xs space-y-2">
+                <div className="font-bold text-slate-800">Rincian Item Pesanan:</div>
+                {selectedInvoiceOrder.items && selectedInvoiceOrder.items.length > 0 ? (
+                  <div className="divide-y divide-slate-200">
+                    {selectedInvoiceOrder.items.map((item) => (
+                      <div
+                        key={item.menuId}
+                        className="py-1.5 flex items-center justify-between gap-3"
+                      >
+                        <span className="text-slate-800 font-medium">
+                          {item.name} ({item.quantity.toLocaleString('id-ID')} porsi ×{' '}
+                          {formatRupiah(item.unitPrice)})
+                        </span>
+                        <span className="font-mono tabular-nums font-bold text-slate-900 shrink-0">
+                          {formatRupiah(item.unitPrice * item.quantity)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-800 font-medium">
+                      {selectedInvoiceOrder.packageName} (
+                      {selectedInvoiceOrder.portions.toLocaleString('id-ID')} porsi ×{' '}
+                      {formatRupiah(selectedInvoiceOrder.unitPrice)})
+                    </span>
+                    <span className="font-mono tabular-nums font-bold text-slate-900 shrink-0">
+                      {formatRupiah(
+                        selectedInvoiceOrder.portions * selectedInvoiceOrder.unitPrice
+                      )}
+                    </span>
+                  </div>
+                )}
+                {selectedInvoiceOrder.notes && (
+                  <div className="pt-1.5 border-t border-slate-200 text-slate-600">
+                    Catatan: {selectedInvoiceOrder.notes}
+                  </div>
+                )}
+              </div>
+
+              {/* Riwayat Perubahan Status */}
+              <div className="rounded-lg border border-slate-200 bg-white p-3.5 text-xs space-y-2">
+                <div className="font-bold text-slate-800">Riwayat Perubahan Status Pesanan</div>
+                {selectedInvoiceOrder.statusHistory &&
+                selectedInvoiceOrder.statusHistory.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {selectedInvoiceOrder.statusHistory.map((h, idx) => (
+                      <div
+                        key={`${h.timestamp}-${idx}`}
+                        className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-1.5 last:border-b-0 last:pb-0"
+                      >
+                        <div>
+                          <span className="font-bold text-slate-900">{h.status}</span>
+                          {h.note && <span className="text-slate-600"> — {h.note}</span>}
+                        </div>
+                        <div className="text-[11px] text-slate-500 font-mono">
+                          {h.actor} ·{' '}
+                          {new Date(h.timestamp).toLocaleString('id-ID', {
+                            timeZone: 'Asia/Jakarta',
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-slate-500">
+                    Status saat ini: <strong>{selectedInvoiceOrder.status}</strong> (dibuat{' '}
+                    {formatTanggalIndonesia(selectedInvoiceOrder.orderDate)}).
+                  </p>
+                )}
+              </div>
             </div>
           )}
+
+          {/* Ringkasan Pembayaran: Sudah Dibayar, DP, Sisa Utang & Sudah Lunas */}
+          {(() => {
+            const activeOrders = orders.filter((o) => o.status !== 'Dibatalkan');
+            const paidVal = activeOrders.reduce(
+              (acc, o) =>
+                acc + (o.paymentStatus === 'Lunas' ? o.totalPayment : Math.max(0, o.downPayment || 0)),
+              0
+            );
+            const dpList = activeOrders.filter(
+              (o) =>
+                o.paymentStatus !== 'Lunas' &&
+                (o.paymentStatus === 'DP Masuk' || (o.downPayment || 0) > 0)
+            );
+            const dpVal = dpList.reduce((acc, o) => acc + Math.max(0, o.downPayment || 0), 0);
+            const debtList = activeOrders.filter((o) => o.paymentStatus !== 'Lunas');
+            const debtVal = debtList.reduce(
+              (acc, o) =>
+                acc + Math.max(0, o.totalPayment - Math.max(0, o.downPayment || 0)),
+              0
+            );
+            const lunasList = activeOrders.filter((o) => o.paymentStatus === 'Lunas');
+            const lunasVal = lunasList.reduce((acc, o) => acc + o.totalPayment, 0);
+
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 text-xs">
+                  <span className="font-semibold text-emerald-900 block">Total Sudah Dibayar</span>
+                  <span className="mt-1 block text-base font-extrabold text-emerald-800 font-mono tabular-nums">
+                    {formatRupiah(paidVal)}
+                  </span>
+                  <span className="text-[11px] text-emerald-700 block mt-0.5">
+                    Dari {activeOrders.length} pesanan aktif
+                  </span>
+                </div>
+                <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-4 text-xs">
+                  <span className="font-semibold text-sky-900 block">Total Uang Muka (DP)</span>
+                  <span className="mt-1 block text-base font-extrabold text-sky-900 font-mono tabular-nums">
+                    {formatRupiah(dpVal)}
+                  </span>
+                  <span className="text-[11px] text-sky-800 block mt-0.5">
+                    {dpList.length} pesanan berstatus DP Masuk
+                  </span>
+                </div>
+                <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 text-xs">
+                  <span className="font-semibold text-amber-900 block">Total Sisa Utang</span>
+                  <span className="mt-1 block text-base font-extrabold text-amber-800 font-mono tabular-nums">
+                    {formatRupiah(debtVal)}
+                  </span>
+                  <span className="text-[11px] text-amber-800 block mt-0.5">
+                    {debtList.length} pesanan belum lunas
+                  </span>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white p-4 text-xs">
+                  <span className="font-semibold text-slate-700 block">Sudah Lunas (100%)</span>
+                  <span className="mt-1 block text-base font-extrabold text-slate-900 font-mono tabular-nums">
+                    {lunasList.length} Pesanan
+                  </span>
+                  <span className="text-[11px] text-emerald-700 font-mono tabular-nums font-semibold block mt-0.5">
+                    Senilai {formatRupiah(lunasVal)}
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Orders Table */}
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
@@ -1040,83 +1407,302 @@ export const CateringModule: React.FC<CateringModuleProps> = ({
                     <th className="py-3 px-4 font-semibold">Pelanggan & WhatsApp</th>
                     <th className="py-3 px-4 font-semibold">Acara & Paket</th>
                     <th className="py-3 px-4 font-semibold text-right">Porsi</th>
-                    <th className="py-3 px-4 font-semibold text-right">Total & Sisa</th>
+                    <th className="py-3 px-4 font-semibold text-right">
+                      Pembayaran (Dibayar / DP / Sisa Utang)
+                    </th>
                     <th className="py-3 px-4 font-semibold">Status Pesanan</th>
                     <th className="py-3 px-4 font-semibold text-right">Tindakan</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredOrders.map((ord) => (
-                    <tr key={ord.id} className="hover:bg-slate-50/80">
-                      <td className="py-3 px-4">
-                        <div className="font-mono tabular-nums font-bold text-slate-900">
-                          {ord.orderNumber}
-                        </div>
-                        <div className="text-slate-500">
-                          Kirim: {formatTanggalIndonesia(ord.deliveryDate)}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="font-semibold text-slate-900">{ord.customerName}</div>
-                        <div className="font-mono tabular-nums text-slate-500">{ord.whatsapp}</div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="font-medium text-slate-900">{ord.packageName}</div>
-                        <div className="text-slate-500">{ord.eventType}</div>
-                      </td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-slate-900">
-                        {ord.portions.toLocaleString('id-ID')} pax
-                      </td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums">
-                        <div className="font-bold text-slate-900">{formatRupiah(ord.totalPayment)}</div>
-                        <div className="text-slate-500">
-                          {ord.paymentStatus} · Sisa {formatRupiah(ord.remainingBalance)}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <select
-                          aria-label={`Ubah status pesanan ${ord.orderNumber}`}
-                          value={ord.status}
-                          onChange={(e) =>
-                            onSaveOrder({
-                              ...ord,
-                              status: e.target.value as OrderStatus,
-                            })
-                          }
-                          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-800"
-                        >
-                          {ORDER_STATUSES.map((st) => (
-                            <option key={st} value={st}>
-                              {st}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <div className="inline-flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedInvoiceOrder(ord)}
-                            aria-label={`Invoice ${ord.orderNumber}`}
-                            className="text-emerald-700 hover:underline font-semibold inline-flex items-center gap-1"
+                  {filteredOrders.map((ord) => {
+                    const paidAmount =
+                      ord.paymentStatus === 'Lunas'
+                        ? ord.totalPayment
+                        : Math.max(0, ord.downPayment || 0);
+                    const remainingDebt =
+                      ord.paymentStatus === 'Lunas'
+                        ? 0
+                        : Math.max(0, ord.totalPayment - paidAmount);
+                    const isEditingPayment = editingPaymentOrderId === ord.id;
+
+                    return (
+                      <tr key={ord.id} className="hover:bg-slate-50/80">
+                        <td className="py-3 px-4">
+                          <div className="font-mono tabular-nums font-bold text-slate-900">
+                            {ord.orderNumber}
+                          </div>
+                          <div className="text-slate-500">
+                            Kirim: {formatTanggalIndonesia(ord.deliveryDate)}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-slate-900">{ord.customerName}</div>
+                          <div className="font-mono tabular-nums text-slate-500">{ord.whatsapp}</div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-medium text-slate-900">{ord.packageName}</div>
+                          <div className="text-slate-500">{ord.eventType}</div>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-slate-900">
+                          {ord.portions.toLocaleString('id-ID')} pax
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono tabular-nums space-y-0.5">
+                          <div className="font-bold text-slate-900">
+                            Total: {formatRupiah(ord.totalPayment)}
+                          </div>
+                          <div className="text-emerald-700 font-semibold">
+                            Dibayar/DP: {formatRupiah(paidAmount)}
+                          </div>
+                          {ord.paymentStatus === 'Lunas' ? (
+                            <div className="text-emerald-700 font-bold inline-flex items-center gap-1 justify-end">
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              <span>Sudah Lunas (Utang Rp 0)</span>
+                            </div>
+                          ) : (
+                            <div className="text-amber-700 font-bold">
+                              Sisa Utang: {formatRupiah(remainingDebt)} ({ord.paymentStatus})
+                            </div>
+                          )}
+
+                          {isEditingPayment && (
+                            <div className="mt-2 flex items-center justify-end gap-1.5 font-sans">
+                              <input
+                                type="number"
+                                min={0}
+                                max={ord.totalPayment}
+                                value={editingPaymentAmount}
+                                onChange={(e) => setEditingPaymentAmount(Number(e.target.value))}
+                                aria-label={`Nominal dibayar atau DP untuk ${ord.orderNumber}`}
+                                className="w-28 rounded border border-slate-300 px-2 py-1 text-xs font-mono tabular-nums text-slate-900"
+                              />
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const clamped = Math.max(
+                                    0,
+                                    Math.min(ord.totalPayment, Number(editingPaymentAmount) || 0)
+                                  );
+                                  try {
+                                    if (clamped >= ord.totalPayment && onConfirmOrderPaid) {
+                                      await onConfirmOrderPaid(ord);
+                                    } else {
+                                      const rem = Math.max(0, ord.totalPayment - clamped);
+                                      const nextPayStatus =
+                                        rem === 0
+                                          ? 'Lunas'
+                                          : clamped > 0
+                                          ? 'DP Masuk'
+                                          : 'Belum Bayar';
+                                      const nextOrderStatus: OrderStatus =
+                                        clamped > 0 &&
+                                        rem > 0 &&
+                                        (ord.status === 'Pesanan baru' ||
+                                          ord.status === 'Menunggu pembayaran')
+                                          ? 'DP masuk'
+                                          : ord.status;
+                                      const nextHist: OrderStatusHistoryItem[] = [
+                                        ...(ord.statusHistory || []),
+                                        {
+                                          status: nextOrderStatus,
+                                          timestamp: new Date().toISOString(),
+                                          actor: 'Admin Operasional',
+                                          note: `Pembayaran DP dicatat: ${formatRupiah(clamped)}`,
+                                        },
+                                      ];
+                                      await onSaveOrder({
+                                        ...ord,
+                                        downPayment: clamped,
+                                        remainingBalance: rem,
+                                        paymentStatus: nextPayStatus,
+                                        status: nextOrderStatus,
+                                        statusHistory: nextHist,
+                                        statusHistoryJson: JSON.stringify(nextHist).slice(0, 2000),
+                                      });
+                                    }
+                                    setEditingPaymentOrderId(null);
+                                    notify(
+                                      `Pembayaran/DP pesanan ${ord.orderNumber} diperbarui: Dibayar ${formatRupiah(
+                                        clamped
+                                      )}.`
+                                    );
+                                  } catch {
+                                    notify(`Gagal memperbarui pembayaran pesanan ${ord.orderNumber}.`);
+                                  }
+                                }}
+                                className="rounded bg-emerald-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-800"
+                              >
+                                Simpan
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingPaymentOrderId(null)}
+                                className="rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-600"
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <select
+                            aria-label={`Ubah status pesanan ${ord.orderNumber}`}
+                            value={ord.status}
+                            onChange={async (e) => {
+                              const nextSt = e.target.value as OrderStatus;
+                              if (nextSt === 'Dibatalkan' && onCancelOrder) {
+                                await onCancelOrder(ord);
+                                return;
+                              }
+                              const nextHist: OrderStatusHistoryItem[] = [
+                                ...(ord.statusHistory || []),
+                                {
+                                  status: nextSt,
+                                  timestamp: new Date().toISOString(),
+                                  actor: 'Admin Operasional',
+                                  note: `Status diubah ke ${nextSt}`,
+                                },
+                              ];
+                              try {
+                                await onSaveOrder({
+                                  ...ord,
+                                  status: nextSt,
+                                  statusHistory: nextHist,
+                                  statusHistoryJson: JSON.stringify(nextHist).slice(0, 2000),
+                                });
+                                notify(`Status pesanan ${ord.orderNumber} diperbarui ke "${nextSt}".`);
+                              } catch {
+                                notify(`Gagal memperbarui status pesanan ${ord.orderNumber}.`);
+                              }
+                            }}
+                            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-800"
                           >
-                            <FileText className="h-3.5 w-3.5" /> Invoice
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onDeleteOrder(ord.id)}
-                            aria-label={`Hapus pesanan ${ord.orderNumber}`}
-                            className="text-red-600 hover:text-red-800 font-semibold"
-                          >
-                            Hapus
-                          </button>
-                        </div>
+                            {ORDER_STATUSES.map((st) => (
+                              <option key={st} value={st}>
+                                {st}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="inline-flex flex-wrap items-center justify-end gap-2">
+                            {ord.paymentStatus !== 'Lunas' && ord.status !== 'Dibatalkan' && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingPaymentOrderId(ord.id);
+                                    setEditingPaymentAmount(paidAmount);
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-md border border-sky-300 bg-sky-50 hover:bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-900 transition-colors whitespace-nowrap"
+                                >
+                                  <Edit3 className="h-3 w-3" />
+                                  <span>Catat DP / Bayar</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      if (onConfirmOrderPaid) {
+                                        await onConfirmOrderPaid(ord);
+                                      } else {
+                                        await onSaveOrder({
+                                          ...ord,
+                                          paymentStatus: 'Lunas',
+                                          downPayment: ord.totalPayment,
+                                          remainingBalance: 0,
+                                          status:
+                                            ord.status === 'Pesanan baru' ||
+                                            ord.status === 'Menunggu pembayaran' ||
+                                            ord.status === 'DP masuk'
+                                              ? 'Diproses'
+                                              : ord.status,
+                                        });
+                                      }
+                                      notify(
+                                        `Pesanan ${ord.orderNumber} (${ord.customerName}) terverifikasi SUDAH DIBAYAR (Lunas).`
+                                      );
+                                    } catch {
+                                      notify(`Gagal memverifikasi pembayaran ${ord.orderNumber}.`);
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-md bg-emerald-700 hover:bg-emerald-800 px-2.5 py-1 text-xs font-semibold text-white transition-colors whitespace-nowrap"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                  <span>Verifikasi Lunas</span>
+                                </button>
+                              </>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingOrderId(ord.id);
+                                setOrderCustomerName(ord.customerName);
+                                setOrderWhatsapp(ord.whatsapp);
+                                setOrderDate(ord.orderDate);
+                                setDeliveryDate(ord.deliveryDate);
+                                setOrderDeliveryTime(ord.deliveryTime || '09:00 WIB');
+                                setOrderDeliveryAddress(ord.deliveryAddress || '');
+                                setOrderEventType(ord.eventType);
+                                setOrderPackageName(ord.packageName);
+                                setOrderPortions(ord.portions);
+                                setOrderUnitPrice(ord.unitPrice);
+                                setOrderDiscount(ord.discount || 0);
+                                setOrderShippingCost(ord.shippingCost || 0);
+                                setOrderDp(ord.downPayment || 0);
+                                setOrderPaymentMethod(ord.paymentMethod || 'Transfer Bank');
+                                setOrderPaymentProofUrl(ord.paymentProofUrl || '');
+                                setOrderStatus(ord.status);
+                                setOrderNotes(ord.notes || '');
+                                setShowOrderForm(true);
+                              }}
+                              aria-label={`Edit pesanan ${ord.orderNumber}`}
+                              className="inline-flex items-center gap-1 text-slate-700 hover:text-emerald-700 font-semibold whitespace-nowrap"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" /> Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedInvoiceOrder(ord)}
+                              aria-label={`Detail & Invoice ${ord.orderNumber}`}
+                              className="text-emerald-700 hover:underline font-semibold inline-flex items-center gap-1 whitespace-nowrap"
+                            >
+                              <FileText className="h-3.5 w-3.5" /> Detail &amp; Invoice
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onDeleteOrder(ord.id)}
+                              aria-label={`Hapus pesanan ${ord.orderNumber}`}
+                              className="text-red-600 hover:text-red-800 font-semibold"
+                            >
+                              Hapus
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filteredOrders.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-8 px-4 text-center text-xs text-slate-500">
+                        Belum ada data pesanan catering di koleksi ini.
                       </td>
                     </tr>
-                  ))}
+                  )}
                 </tbody>
               </table>
             </div>
+            {hasMoreCloudData && onLoadMore && (
+              <div className="border-t border-slate-200 bg-slate-50 px-4 py-3 text-center">
+                <button
+                  type="button"
+                  onClick={onLoadMore}
+                  className="rounded-lg border border-slate-300 bg-white hover:bg-slate-100 px-4 py-1.5 text-xs font-semibold text-slate-700"
+                >
+                  Muat Lebih Banyak Data Pesanan dari Cloud
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

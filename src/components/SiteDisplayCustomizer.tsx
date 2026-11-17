@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Building2,
   CheckCircle2,
@@ -7,6 +7,7 @@ import {
   LayoutTemplate,
   MapPin,
   Palette,
+  QrCode,
   RotateCcw,
   Save,
   Sparkles,
@@ -14,6 +15,11 @@ import {
 } from 'lucide-react';
 import { SiteContentSettings } from '../types/erp';
 import { DEFAULT_SITE_SETTINGS, GENERATED_IMAGES } from '../data/seedData';
+import {
+  DEFAULT_BOTANICAL_ORNAMENT_URL,
+  resolveThemePreset,
+  THEME_LIST,
+} from '../utils/themePresets';
 
 interface SiteDisplayCustomizerProps {
   settings: SiteContentSettings;
@@ -32,6 +38,36 @@ export const SiteDisplayCustomizer: React.FC<SiteDisplayCustomizerProps> = ({
   const [activeTab, setActiveTab] = useState<CustomizerTab>('brand');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const qrisFileInputRef = useRef<HTMLInputElement | null>(null);
+  const ornamentFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleQrisFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        updateField('qrisImageUrl', reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleOrnamentFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setForm((prev) => ({
+          ...prev,
+          themeOrnamentEnabled: true,
+          themeOrnamentUrl: reader.result as string,
+        }));
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   useEffect(() => {
     setForm(settings);
@@ -125,7 +161,7 @@ export const SiteDisplayCustomizer: React.FC<SiteDisplayCustomizerProps> = ({
             { key: 'hero', label: '2. Banner Utama (Hero) & Foto', icon: ImageIcon },
             { key: 'katalog', label: '3. Teks Katalog, Promo & Pelacakan', icon: Tag },
             { key: 'tentang', label: '4. Tentang Kami & Keunggulan', icon: Building2 },
-            { key: 'kontak', label: '5. Kontak, WhatsApp & Rekening Bank', icon: MapPin },
+            { key: 'kontak', label: '5. Kontak, Rekening Bank & QRIS', icon: MapPin },
           ].map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.key;
@@ -244,28 +280,6 @@ export const SiteDisplayCustomizer: React.FC<SiteDisplayCustomizerProps> = ({
 
               <div>
                 <label
-                  htmlFor="cms-accent-theme"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
-                >
-                  Tema Warna Aksen Tampilan
-                </label>
-                <select
-                  id="cms-accent-theme"
-                  value={form.accentTheme}
-                  onChange={(e) =>
-                    updateField('accentTheme', e.target.value as SiteContentSettings['accentTheme'])
-                  }
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-hidden"
-                >
-                  <option value="emerald">Hijau Emerald Nusantara (Default Profesional)</option>
-                  <option value="navy">Biru Navy Eksekutif Korporat</option>
-                  <option value="teal">Teal Modern & Segar</option>
-                  <option value="amber">Emas Royal & Hangat</option>
-                </select>
-              </div>
-
-              <div>
-                <label
                   htmlFor="cms-footer-copy"
                   className="block text-xs font-semibold text-slate-700 mb-1"
                 >
@@ -278,6 +292,194 @@ export const SiteDisplayCustomizer: React.FC<SiteDisplayCustomizerProps> = ({
                   onChange={(e) => updateField('footerCopyright', e.target.value)}
                   className="w-full rounded-lg border border-slate-300 px-3.5 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-hidden"
                 />
+              </div>
+
+              <div className="md:col-span-2 pt-3 border-t border-slate-100 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <Palette className="h-4 w-4 text-emerald-700" />
+                      <span>Galeri Tema Tampilan &amp; Ornamen Artistik</span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Pilih palet warna, gaya tipografi, dan ornamen visual untuk Website Pelanggan serta Panel Admin.
+                    </p>
+                  </div>
+                  <select
+                    id="cms-accent-theme"
+                    aria-label="Pilih Tema Tampilan"
+                    value={form.accentTheme}
+                    onChange={(e) => {
+                      const nextKey = e.target.value as SiteContentSettings['accentTheme'];
+                      const preset = resolveThemePreset(nextKey);
+                      setForm((prev) => ({
+                        ...prev,
+                        accentTheme: nextKey,
+                        themeOrnamentEnabled: preset.supportsOrnament,
+                        themeOrnamentUrl:
+                          prev.themeOrnamentUrl || DEFAULT_BOTANICAL_ORNAMENT_URL,
+                      }));
+                    }}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-900 focus:border-emerald-600 focus:outline-hidden"
+                  >
+                    {THEME_LIST.map((preset) => (
+                      <option key={preset.key} value={preset.key}>
+                        {preset.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Visual Interactive Theme Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                  {THEME_LIST.map((preset) => {
+                    const selected = form.accentTheme === preset.key;
+                    return (
+                      <button
+                        key={preset.key}
+                        type="button"
+                        onClick={() => {
+                          setForm((prev) => ({
+                            ...prev,
+                            accentTheme: preset.key,
+                            themeOrnamentEnabled: preset.supportsOrnament,
+                            themeOrnamentUrl:
+                              prev.themeOrnamentUrl || DEFAULT_BOTANICAL_ORNAMENT_URL,
+                          }));
+                        }}
+                        className={`text-left rounded-xl border p-4 transition-all flex flex-col justify-between gap-3 ${
+                          selected
+                            ? 'border-slate-900 ring-2 ring-slate-900/15 bg-slate-50/70'
+                            : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50'
+                        }`}
+                      >
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5">
+                              {preset.swatches.map((hex, sIdx) => (
+                                <span
+                                  key={sIdx}
+                                  className="h-4 w-4 rounded-full border border-black/10"
+                                  style={{ backgroundColor: hex }}
+                                />
+                              ))}
+                            </div>
+                            {selected && (
+                              <span className="text-[11px] font-bold text-emerald-700 flex items-center gap-1">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                <span>Aktif</span>
+                              </span>
+                            )}
+                          </div>
+
+                          <div>
+                            <div className="text-xs font-bold text-slate-900">{preset.name}</div>
+                            <div className="text-[11px] font-semibold text-slate-500">
+                              {preset.tagline}
+                            </div>
+                          </div>
+
+                          <p className="text-[11px] text-slate-600 leading-relaxed">
+                            {preset.description}
+                          </p>
+                        </div>
+
+                        {preset.supportsOrnament && (
+                          <div className="rounded-lg border border-[#E4DCD0] bg-[#FAF7F2] h-14 overflow-hidden flex items-end justify-center pt-1">
+                            <img
+                              src={form.themeOrnamentUrl || DEFAULT_BOTANICAL_ORNAMENT_URL}
+                              alt="Pratinjau Ornamen Flora Nusantara"
+                              referrerPolicy="no-referrer"
+                              className="h-20 w-20 object-contain object-bottom mix-blend-multiply"
+                            />
+                            <img
+                              src={form.themeOrnamentUrl || DEFAULT_BOTANICAL_ORNAMENT_URL}
+                              alt=""
+                              aria-hidden="true"
+                              referrerPolicy="no-referrer"
+                              className="h-20 w-20 object-contain object-bottom mix-blend-multiply -scale-x-100 -ml-2"
+                            />
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Ornamen Artistik Flora Controls */}
+                <div className="rounded-xl border border-[#E4DCD0] bg-[#FAF7F2] p-4 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-bold text-slate-900">
+                        Ornamen Ilustrasi Flora pada Tema
+                      </div>
+                      <div className="text-[11px] text-slate-600">
+                        Menampilkan ilustrasi flora artistik di transisi hero, kartu promo, tentang kami, dan horizon footer.
+                      </div>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-800 cursor-pointer shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={
+                          form.themeOrnamentEnabled !== undefined
+                            ? form.themeOrnamentEnabled
+                            : form.accentTheme === 'flora-elegan'
+                        }
+                        onChange={(e) => updateField('themeOrnamentEnabled', e.target.checked)}
+                        className="rounded border-slate-300 accent-[#C43E24]"
+                      />
+                      <span>Aktifkan Ornamen Flora</span>
+                    </label>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-1">
+                    <div className="h-14 w-14 rounded-lg border border-[#E4DCD0] bg-white overflow-hidden shrink-0 flex items-end justify-center p-1">
+                      <img
+                        src={form.themeOrnamentUrl || DEFAULT_BOTANICAL_ORNAMENT_URL}
+                        alt="Artwork Ornamen Tema"
+                        referrerPolicy="no-referrer"
+                        className="h-full w-full object-contain"
+                      />
+                    </div>
+                    <div className="flex-1 flex flex-wrap items-center gap-2">
+                      <input
+                        type="text"
+                        aria-label="URL Gambar Ornamen Tema"
+                        value={form.themeOrnamentUrl || ''}
+                        onChange={(e) => updateField('themeOrnamentUrl', e.target.value)}
+                        placeholder={DEFAULT_BOTANICAL_ORNAMENT_URL}
+                        className="flex-1 min-w-[180px] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-mono text-slate-900"
+                      />
+                      <input
+                        ref={ornamentFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleOrnamentFileUpload}
+                        className="hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => ornamentFileInputRef.current?.click()}
+                        className="rounded-lg border border-slate-300 bg-white hover:bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-800 whitespace-nowrap"
+                      >
+                        Unggah Ornamen
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm((prev) => ({
+                            ...prev,
+                            themeOrnamentUrl: DEFAULT_BOTANICAL_ORNAMENT_URL,
+                            themeOrnamentEnabled: true,
+                          }))
+                        }
+                        className="rounded-lg border border-slate-300 bg-white hover:bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 whitespace-nowrap"
+                      >
+                        Ornamen Bawaan
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -801,40 +1003,164 @@ export const SiteDisplayCustomizer: React.FC<SiteDisplayCustomizerProps> = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3 border-t border-slate-100">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Nama Bank Rekening Utama
-                </label>
-                <input
-                  type="text"
-                  value={form.bankName}
-                  onChange={(e) => updateField('bankName', e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
-                />
+            <div className="space-y-4 pt-3 border-t border-slate-100">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                Rekening Bank Utama & Bank Kedua
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nama Bank Rekening Utama
+                  </label>
+                  <input
+                    type="text"
+                    value={form.bankName}
+                    onChange={(e) => updateField('bankName', e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nomor Rekening Utama
+                  </label>
+                  <input
+                    type="text"
+                    value={form.bankAccountNumber}
+                    onChange={(e) => updateField('bankAccountNumber', e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Atas Nama Rekening Utama
+                  </label>
+                  <input
+                    type="text"
+                    value={form.bankAccountHolder}
+                    onChange={(e) => updateField('bankAccountHolder', e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Nomor Rekening Resmi
-                </label>
-                <input
-                  type="text"
-                  value={form.bankAccountNumber}
-                  onChange={(e) => updateField('bankAccountNumber', e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900"
-                />
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nama Bank Kedua (Opsional)
+                  </label>
+                  <input
+                    type="text"
+                    value={form.bank2Name || ''}
+                    onChange={(e) => updateField('bank2Name', e.target.value)}
+                    placeholder="Bank BCA / BRI"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nomor Rekening Bank Kedua
+                  </label>
+                  <input
+                    type="text"
+                    value={form.bank2AccountNumber || ''}
+                    onChange={(e) => updateField('bank2AccountNumber', e.target.value)}
+                    placeholder="522-0394-881"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Atas Nama Rekening Kedua
+                  </label>
+                  <input
+                    type="text"
+                    value={form.bank2AccountHolder || ''}
+                    onChange={(e) => updateField('bank2AccountHolder', e.target.value)}
+                    placeholder="PT Smart Catering Nusantara"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Atas Nama Rekening
-                </label>
-                <input
-                  type="text"
-                  value={form.bankAccountHolder}
-                  onChange={(e) => updateField('bankAccountHolder', e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
-                />
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+                <QrCode className="h-4 w-4 text-emerald-700" />
+                <span>Pengaturan QRIS Usaha (Pembayaran Pelanggan)</span>
               </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nama Merchant QRIS
+                  </label>
+                  <input
+                    type="text"
+                    value={form.qrisMerchantName || ''}
+                    onChange={(e) => updateField('qrisMerchantName', e.target.value)}
+                    placeholder="SMART CATERING NUSANTARA"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    NMID / ID Merchant QRIS
+                  </label>
+                  <input
+                    type="text"
+                    value={form.qrisNmid || ''}
+                    onChange={(e) => updateField('qrisNmid', e.target.value)}
+                    placeholder="ID102026098765432"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-mono text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Upload Gambar QR QRIS atau URL
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={form.qrisImageUrl || ''}
+                      onChange={(e) => updateField('qrisImageUrl', e.target.value)}
+                      placeholder="URL gambar QRIS..."
+                      className="flex-1 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs font-mono text-slate-900"
+                    />
+                    <input
+                      ref={qrisFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleQrisFileUpload}
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => qrisFileInputRef.current?.click()}
+                      className="rounded-lg border border-slate-300 bg-white hover:bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 whitespace-nowrap"
+                    >
+                      Upload QR
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {form.qrisImageUrl && (
+                <div className="flex items-center gap-3 pt-1">
+                  <img
+                    src={form.qrisImageUrl}
+                    alt="Pratinjau QRIS Usaha"
+                    className="h-20 w-20 rounded-lg border border-slate-300 bg-white object-contain p-1"
+                  />
+                  <div className="text-[11px] text-slate-600 space-y-1">
+                    <div className="font-semibold text-slate-800">Gambar QRIS Aktif</div>
+                    <button
+                      type="button"
+                      onClick={() => updateField('qrisImageUrl', '')}
+                      className="text-red-600 hover:underline font-semibold"
+                    >
+                      Hapus Gambar QR
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

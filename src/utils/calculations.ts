@@ -136,6 +136,10 @@ export function deriveOrderTrackingDetails(order: CateringOrder): {
       productionStatus = 'Verifikasi Pesanan & Jadwal Dapur';
       deliveryStatus = 'Menunggu Proses Dapur';
       break;
+    case 'DP masuk':
+      productionStatus = 'DP Terkonfirmasi · Persiapan Bahan';
+      deliveryStatus = 'Slot Pengiriman Terjadwal';
+      break;
     case 'Diproses':
       productionStatus = 'Persiapan Bahan Baku Segar';
       deliveryStatus = 'Terjadwal di Armada Logistik';
@@ -180,6 +184,7 @@ export function calculateOrderFinancials(params: {
   portions: number;
   unitPrice: number;
   discount: number;
+  shippingCost?: number;
   downPayment: number;
 }): {
   grossTotal: number;
@@ -190,8 +195,9 @@ export function calculateOrderFinancials(params: {
   const portions = Math.max(1, Math.round(params.portions));
   const unitPrice = Math.max(0, Math.round(params.unitPrice));
   const discount = Math.max(0, Math.round(params.discount));
+  const shippingCost = Math.max(0, Math.round(params.shippingCost || 0));
   const grossTotal = portions * unitPrice;
-  const totalPayment = Math.max(0, grossTotal - discount);
+  const totalPayment = Math.max(0, grossTotal - discount + shippingCost);
   const downPayment = Math.max(0, Math.min(totalPayment, Math.round(params.downPayment)));
   const remainingBalance = Math.max(0, totalPayment - downPayment);
 
@@ -247,11 +253,97 @@ export function calculateRawMaterialRequirement(
   };
 }
 
+export type PeriodFilterKey =
+  | 'today'
+  | '7days'
+  | 'this_month'
+  | 'prev_month'
+  | 'this_year'
+  | 'custom'
+  | 'all';
+
+export function getJakartaTodayIso(): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Jakarta',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+export function isDateInPeriod(
+  dateStr: string,
+  period: PeriodFilterKey,
+  customStart?: string,
+  customEnd?: string,
+  referenceDateIso?: string
+): boolean {
+  if (!period || period === 'all') return true;
+  if (!dateStr || dateStr.length < 10) return false;
+  const targetDay = dateStr.slice(0, 10);
+  const todayIso = referenceDateIso || getJakartaTodayIso();
+  const todayDate = new Date(`${todayIso}T00:00:00+07:00`);
+
+  if (period === 'today') {
+    return targetDay === todayIso;
+  }
+
+  if (period === '7days') {
+    const past = new Date(todayDate);
+    past.setDate(past.getDate() - 6);
+    const pastIso = past.toISOString().slice(0, 10);
+    return targetDay >= pastIso && targetDay <= todayIso;
+  }
+
+  if (period === 'this_month') {
+    return targetDay.slice(0, 7) === todayIso.slice(0, 7);
+  }
+
+  if (period === 'prev_month') {
+    const prev = new Date(todayDate);
+    prev.setMonth(prev.getMonth() - 1);
+    const prevYm = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+    return targetDay.slice(0, 7) === prevYm;
+  }
+
+  if (period === 'this_year') {
+    return targetDay.slice(0, 4) === todayIso.slice(0, 4);
+  }
+
+  if (period === 'custom') {
+    if (customStart && targetDay < customStart) return false;
+    if (customEnd && targetDay > customEnd) return false;
+    return true;
+  }
+
+  return true;
+}
+
 export interface DashboardMetrics {
-  totalPendapatanCatering: number;
-  totalPendapatanSekolah: number;
+  // 12 Core Master Prompt KPIs
+  totalPesanan: number;
+  pesananBaru: number;
+  pesananDiproses: number;
+  pesananSelesai: number;
+  totalPendapatan: number;
+  totalPembayaranDiterima: number;
+  totalPiutang: number;
   totalPengeluaran: number;
   keuntunganBersih: number;
+  saldoKasDanBank: number;
+  totalUtang: number;
+  persediaanMenipisCount: number;
+
+  // Granular Separated Balances & Legacy Fields
+  totalPendapatanCatering: number;
+  totalPendapatanSekolah: number;
+  saldoKasTunai: number;
+  saldoRekeningBank: number;
+  saldoQris: number;
   pesananAktifCount: number;
   produksiHariIniPorsi: number;
   totalPorsiTerdistribusi: number;
@@ -260,56 +352,199 @@ export interface DashboardMetrics {
   stokAmanCount: number;
   stokKritisCount: number;
   totalNilaiStok: number;
-  totalUtang: number;
-  totalPiutang: number;
-  saldoKasDanBank: number;
+}
+
+function getOrderLinkedFinanceIds(entries: FinanceEntry[]): Set<string> {
+  const linked = new Set<string>();
+  for (const e of entries) {
+    if (e.orderRef) linked.add(e.orderRef.trim().toUpperCase());
+    if (e.referenceCode.startsWith('LUNAS-')) {
+      linked.add(e.referenceCode.replace('LUNAS-', '').trim().toUpperCase());
+    }
+    if (e.referenceCode.startsWith('DP-')) {
+      linked.add(e.referenceCode.replace('DP-', '').trim().toUpperCase());
+    }
+  }
+  return linked;
 }
 
 export function computeDashboardMetrics(
   snapshot: ErpStateSnapshot,
   filterUnit: 'Semua Unit' | 'Catering Komersial' | 'Sekolah Rakyat' = 'Semua Unit',
-  filterMonth: string = 'Semua'
+  periodOrMonth: string = 'all',
+  customStart?: string,
+  customEnd?: string
 ): DashboardMetrics {
-  const matchesMonth = (dateStr: string) => {
-    if (!filterMonth || filterMonth === 'Semua') return true;
-    return dateStr.startsWith(filterMonth);
+  const isPeriodKey = [
+    'today',
+    '7days',
+    'this_month',
+    'prev_month',
+    'this_year',
+    'custom',
+    'all',
+  ].includes(periodOrMonth);
+
+  const matchesDate = (dateStr: string) => {
+    if (!periodOrMonth || periodOrMonth === 'Semua' || periodOrMonth === 'all') return true;
+    if (isPeriodKey) {
+      return isDateInPeriod(dateStr, periodOrMonth as PeriodFilterKey, customStart, customEnd);
+    }
+    return dateStr.startsWith(periodOrMonth);
   };
 
-  const filteredFinance = snapshot.financeEntries.filter((f) => matchesMonth(f.transactionDate));
-  const filteredOrders = snapshot.cateringOrders.filter((o) => matchesMonth(o.orderDate));
-  const filteredProduction = snapshot.productionBatches.filter((p) => matchesMonth(p.productionDate));
-  const filteredDeliveries = snapshot.schoolDeliveries.filter((d) => matchesMonth(d.deliveryDate));
+  const filteredFinance = snapshot.financeEntries.filter((f) => matchesDate(f.transactionDate));
+  const filteredOrders = snapshot.cateringOrders.filter((o) => matchesDate(o.orderDate));
+  const filteredProduction = snapshot.productionBatches.filter((p) =>
+    matchesDate(p.productionDate)
+  );
+  const filteredDeliveries = snapshot.schoolDeliveries.filter((d) => matchesDate(d.deliveryDate));
 
-  const ledgerCateringIncome = filteredFinance
-    .filter((f) => f.type === 'Pendapatan Catering')
+  const nonCancelledOrders = filteredOrders.filter((o) => o.status !== 'Dibatalkan');
+
+  // 1-4: Order counts
+  const totalPesanan = filterUnit === 'Sekolah Rakyat' ? 0 : filteredOrders.length;
+  const pesananBaru =
+    filterUnit === 'Sekolah Rakyat'
+      ? 0
+      : filteredOrders.filter(
+          (o) => o.status === 'Pesanan baru' || o.status === 'Menunggu pembayaran'
+        ).length;
+  const pesananDiproses =
+    filterUnit === 'Sekolah Rakyat'
+      ? 0
+      : filteredOrders.filter((o) =>
+          ['DP masuk', 'Diproses', 'Sedang diproduksi', 'Siap dikirim', 'Dalam pengiriman'].includes(
+            o.status
+          )
+        ).length;
+  const pesananSelesai =
+    filterUnit === 'Sekolah Rakyat'
+      ? 0
+      : filteredOrders.filter((o) => o.status === 'Selesai').length;
+
+  // Deduplicate order-linked finance receipts vs order payment state
+  const linkedOrderNums = getOrderLinkedFinanceIds(filteredFinance);
+
+  // Actual verified cash received from Finance Ledger ('Lunas')
+  const ledgerCateringCash = filteredFinance
+    .filter((f) => f.type === 'Pendapatan Catering' && f.settlementStatus === 'Lunas')
     .reduce((acc, item) => acc + item.amount, 0);
 
-  const orderPaidIncome = filteredOrders
-    .filter((o) => o.status !== 'Dibatalkan')
-    .reduce((acc, o) => acc + (o.paymentStatus === 'Lunas' ? o.totalPayment : o.downPayment), 0);
+  // Unlinked verified payments directly recorded on CateringOrder (not yet in finance_entries)
+  const unlinkedOrderCash = nonCancelledOrders
+    .filter((o) => !linkedOrderNums.has(o.orderNumber.trim().toUpperCase()))
+    .reduce((acc, o) => {
+      if (o.paymentStatus === 'Lunas') return acc + o.totalPayment;
+      if (o.paymentStatus === 'DP Masuk') return acc + Math.max(0, o.downPayment || 0);
+      return acc;
+    }, 0);
 
   const totalPendapatanCatering =
-    filterUnit === 'Sekolah Rakyat' ? 0 : Math.max(ledgerCateringIncome, orderPaidIncome);
+    filterUnit === 'Sekolah Rakyat' ? 0 : ledgerCateringCash + unlinkedOrderCash;
 
   const totalPendapatanSekolah =
     filterUnit === 'Catering Komersial'
       ? 0
       : filteredFinance
-          .filter((f) => f.type === 'Pendapatan Sekolah Rakyat')
+          .filter((f) => f.type === 'Pendapatan Sekolah Rakyat' && f.settlementStatus === 'Lunas')
           .reduce((acc, item) => acc + item.amount, 0);
+
+  // Total Pendapatan = recognized revenue value (verified receipts + sekolah income)
+  const totalPembayaranDiterima = totalPendapatanCatering + totalPendapatanSekolah;
+
+  // Total Nilai Omzet Pesanan + Sekolah (including invoiced contracts not yet paid)
+  const cateringContractRevenue =
+    filterUnit === 'Sekolah Rakyat'
+      ? 0
+      : nonCancelledOrders.reduce((acc, o) => acc + o.totalPayment, 0);
+  const manualNonOrderCateringLedger =
+    filterUnit === 'Sekolah Rakyat'
+      ? 0
+      : filteredFinance
+          .filter((f) => f.type === 'Pendapatan Catering' && !f.orderRef && !f.referenceCode.startsWith('LUNAS-') && !f.referenceCode.startsWith('DP-'))
+          .reduce((acc, item) => acc + item.amount, 0);
+  const totalPendapatan =
+    Math.max(totalPendapatanCatering, cateringContractRevenue + manualNonOrderCateringLedger) +
+    totalPendapatanSekolah;
 
   const rawExpenses = filteredFinance
     .filter((f) => f.type === 'Pengeluaran Operasional')
     .reduce((acc, item) => acc + item.amount, 0);
 
-  const totalPengeluaran =
-    filterUnit === 'Catering Komersial'
-      ? Math.round(rawExpenses * 0.58)
-      : filterUnit === 'Sekolah Rakyat'
-      ? Math.round(rawExpenses * 0.42)
-      : rawExpenses;
+  const paidExpenses = filteredFinance
+    .filter((f) => f.type === 'Pengeluaran Operasional' && f.settlementStatus === 'Lunas')
+    .reduce((acc, item) => acc + item.amount, 0);
 
-  const keuntunganBersih = totalPendapatanCatering + totalPendapatanSekolah - totalPengeluaran;
+  const totalPengeluaran = rawExpenses;
+  const keuntunganBersih = totalPembayaranDiterima - totalPengeluaran;
+
+  // Separated Cash / Bank / QRIS Balances strictly from actual Firestore data (ZERO hardcoded constants!)
+  const calcAccountBalance = (matcher: (acc: FinanceEntry['accountMethod']) => boolean): number => {
+    const ledgerIn = filteredFinance
+      .filter(
+        (f) =>
+          (f.type === 'Pendapatan Catering' || f.type === 'Pendapatan Sekolah Rakyat') &&
+          f.settlementStatus === 'Lunas' &&
+          matcher(f.accountMethod)
+      )
+      .reduce((sum, f) => sum + f.amount, 0);
+
+    const ledgerOut = filteredFinance
+      .filter(
+        (f) =>
+          f.type === 'Pengeluaran Operasional' &&
+          f.settlementStatus === 'Lunas' &&
+          matcher(f.accountMethod)
+      )
+      .reduce((sum, f) => sum + f.amount, 0);
+
+    const unlinkedCashForAccount = nonCancelledOrders
+      .filter((o) => !linkedOrderNums.has(o.orderNumber.trim().toUpperCase()))
+      .filter((o) => {
+        const mapped: FinanceEntry['accountMethod'] =
+          o.paymentMethod === 'QRIS'
+            ? 'QRIS'
+            : o.paymentMethod === 'Pembayaran Tunai'
+            ? 'Kas Tunai'
+            : 'Bank Mandiri ERP';
+        return matcher(mapped);
+      })
+      .reduce((sum, o) => {
+        if (o.paymentStatus === 'Lunas') return sum + o.totalPayment;
+        if (o.paymentStatus === 'DP Masuk') return sum + Math.max(0, o.downPayment || 0);
+        return sum;
+      }, 0);
+
+    return ledgerIn + unlinkedCashForAccount - ledgerOut;
+  };
+
+  const saldoKasTunai = calcAccountBalance((a) => a === 'Kas Tunai');
+  const saldoQris = calcAccountBalance((a) => a === 'QRIS');
+  const saldoRekeningBank = calcAccountBalance(
+    (a) =>
+      a === 'Bank Mandiri ERP' || a === 'Bank BRI Sekolah Rakyat' || a === 'Bank BCA Corporate'
+  );
+  const saldoKasDanBank = saldoKasTunai + saldoRekeningBank + saldoQris;
+
+  const totalUtang = filteredFinance
+    .filter((f) => f.type === 'Utang Supplier' && f.settlementStatus === 'Belum Lunas')
+    .reduce((acc, f) => acc + f.amount, 0);
+
+  const ledgerPiutang = filteredFinance
+    .filter((f) => f.type === 'Piutang Pelanggan' && f.settlementStatus === 'Belum Lunas')
+    .reduce((acc, f) => acc + f.amount, 0);
+
+  const orderPiutang = nonCancelledOrders.reduce(
+    (acc, o) =>
+      acc +
+      (o.paymentStatus === 'Lunas'
+        ? 0
+        : Math.max(0, o.totalPayment - Math.max(0, o.downPayment || 0))),
+    0
+  );
+
+  const totalPiutang = ledgerPiutang + orderPiutang;
 
   const pesananAktifCount =
     filterUnit === 'Sekolah Rakyat'
@@ -318,7 +553,8 @@ export function computeDashboardMetrics(
 
   const produksiHariIniPorsi = filteredProduction
     .filter((p) => {
-      if (filterUnit === 'Catering Komersial' && p.targetChannel !== 'Catering Komersial') return false;
+      if (filterUnit === 'Catering Komersial' && p.targetChannel !== 'Catering Komersial')
+        return false;
       if (filterUnit === 'Sekolah Rakyat' && p.targetChannel !== 'Sekolah Rakyat') return false;
       return p.status !== 'Dibatalkan';
     })
@@ -341,34 +577,37 @@ export function computeDashboardMetrics(
   const totalPorsiTerdistribusi = schoolDistributed + cateringDistributed;
 
   const jumlahPelanggan = snapshot.customers.filter((c) => c.isActive).length;
-  const jumlahSekolahDilayani = snapshot.schools.filter((s) => s.partnershipStatus === 'Aktif').length;
+  const jumlahSekolahDilayani = snapshot.schools.filter(
+    (s) => s.partnershipStatus === 'Aktif'
+  ).length;
 
   const stokKritisCount = snapshot.inventoryItems.filter((i) => i.stockQty <= i.minStock).length;
   const stokAmanCount = snapshot.inventoryItems.length - stokKritisCount;
-  const totalNilaiStok = snapshot.inventoryItems.reduce((acc, i) => acc + i.stockQty * i.unitCost, 0);
+  const totalNilaiStok = snapshot.inventoryItems.reduce(
+    (acc, i) => acc + i.stockQty * i.unitCost,
+    0
+  );
 
-  const totalUtang = filteredFinance
-    .filter((f) => f.type === 'Utang Supplier' && f.settlementStatus === 'Belum Lunas')
-    .reduce((acc, f) => acc + f.amount, 0);
-
-  const ledgerPiutang = filteredFinance
-    .filter((f) => f.type === 'Piutang Pelanggan' && f.settlementStatus === 'Belum Lunas')
-    .reduce((acc, f) => acc + f.amount, 0);
-
-  const orderPiutang = filteredOrders
-    .filter((o) => o.status !== 'Dibatalkan')
-    .reduce((acc, o) => acc + o.remainingBalance, 0);
-
-  const totalPiutang = ledgerPiutang + orderPiutang;
-
-  const initialModalKas = 145000000;
-  const saldoKasDanBank = initialModalKas + keuntunganBersih - totalUtang;
+  void paidExpenses;
 
   return {
-    totalPendapatanCatering,
-    totalPendapatanSekolah,
+    totalPesanan,
+    pesananBaru,
+    pesananDiproses,
+    pesananSelesai,
+    totalPendapatan,
+    totalPembayaranDiterima,
+    totalPiutang,
     totalPengeluaran,
     keuntunganBersih,
+    saldoKasDanBank,
+    totalUtang,
+    persediaanMenipisCount: stokKritisCount,
+    totalPendapatanCatering,
+    totalPendapatanSekolah,
+    saldoKasTunai,
+    saldoRekeningBank,
+    saldoQris,
     pesananAktifCount,
     produksiHariIniPorsi,
     totalPorsiTerdistribusi,
@@ -377,8 +616,6 @@ export function computeDashboardMetrics(
     stokAmanCount,
     stokKritisCount,
     totalNilaiStok,
-    totalUtang,
-    totalPiutang,
-    saldoKasDanBank,
   };
 }
+

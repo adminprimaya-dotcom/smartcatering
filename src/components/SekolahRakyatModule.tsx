@@ -9,6 +9,8 @@ import {
 } from '@vis.gl/react-google-maps';
 import {
   Building2,
+  Camera,
+  Edit3,
   FileCheck2,
   MapPin,
   Navigation,
@@ -18,8 +20,8 @@ import {
   Trash2,
   Truck,
 } from 'lucide-react';
-import { SchoolDelivery, SchoolRecord } from '../types/erp';
-import { formatTanggalIndonesia } from '../utils/calculations';
+import { ProductionBatch, SchoolDelivery, SchoolRecord } from '../types/erp';
+import { formatTanggalIndonesia, getJakartaTodayIso } from '../utils/calculations';
 
 interface SchoolMarkerProps {
   school: SchoolRecord;
@@ -74,6 +76,7 @@ interface SekolahRakyatModuleProps {
   ownerId: string;
   schools: SchoolRecord[];
   deliveries: SchoolDelivery[];
+  productionBatches?: ProductionBatch[];
   onSaveSchool: (school: SchoolRecord) => Promise<void>;
   onDeleteSchool: (id: string) => Promise<void>;
   onSaveDelivery: (delivery: SchoolDelivery) => Promise<void>;
@@ -84,18 +87,21 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
   ownerId,
   schools,
   deliveries,
+  productionBatches = [],
   onSaveSchool,
   onDeleteSchool,
   onSaveDelivery,
   onDeleteDelivery,
 }) => {
+  const todayIso = getJakartaTodayIso();
   const [activeSubTab, setActiveSubTab] = useState<'schools' | 'deliveries' | 'lpj'>('schools');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSchool, setSelectedSchool] = useState<SchoolRecord | null>(schools[0] || null);
   const [feedback, setFeedback] = useState('');
 
-  // Add School Form State
+  // Add / Edit School Form State
   const [showSchoolForm, setShowSchoolForm] = useState(false);
+  const [editingSchoolId, setEditingSchoolId] = useState<string | null>(null);
   const [schoolName, setSchoolName] = useState('');
   const [npsn, setNpsn] = useState('');
   const [address, setAddress] = useState('');
@@ -110,14 +116,23 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
 
   // Add Delivery Form State
   const [showDeliveryForm, setShowDeliveryForm] = useState(false);
-  const [delDate, setDelDate] = useState('2026-11-16');
-  const [delSchoolId, setDelSchoolId] = useState(schools[0]?.id || 'sch-sr-menteng-01');
+  const [delDate, setDelDate] = useState(todayIso);
+  const [delSchoolId, setDelSchoolId] = useState(schools[0]?.id || '');
+  const [delBatchId, setDelBatchId] = useState('');
   const [delMenuPkg, setDelMenuPkg] = useState('Paket Gizi Terpadu Ikan Fillet & Susu UHT');
+  const [delPortionsPlanned, setDelPortionsPlanned] = useState(schools[0]?.studentCount || 420);
   const [delPortions, setDelPortions] = useState(schools[0]?.studentCount || 420);
   const [delCourier, setDelCourier] = useState('Armada 01 - Agus Salim (B 9124 SCA)');
   const [delDepart, setDelDepart] = useState('06:55 WIB');
   const [delArrive, setDelArrive] = useState('07:30 WIB');
+  const [delRecipient, setDelRecipient] = useState(schools[0]?.principalName || '');
+  const [delProofNote, setDelProofNote] = useState('');
+  const [delProofUrl, setDelProofUrl] = useState('');
   const [delStatus, setDelStatus] = useState<SchoolDelivery['status']>('Dalam Pengiriman');
+
+  // Delivery History Filter
+  const [delSearch, setDelSearch] = useState('');
+  const [delStatusFilter, setDelStatusFilter] = useState<string>('Semua');
 
   const mapsApiKey =
     (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_MAPS_API_KEY) ||
@@ -136,7 +151,7 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
       return;
     }
     const newSchool: SchoolRecord = {
-      id: `sch-${Date.now()}`,
+      id: editingSchoolId || `sch-${Date.now()}`,
       ownerId,
       schoolName: schoolName.trim(),
       npsn: npsn.trim(),
@@ -150,14 +165,19 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
       deliverySchedule: deliverySchedule.trim(),
       partnershipStatus,
     };
-    await onSaveSchool(newSchool);
-    setSelectedSchool(newSchool);
-    setShowSchoolForm(false);
-    setSchoolName('');
-    setNpsn('');
-    setAddress('');
-    setPrincipalName('');
-    notify('Data Sekolah Rakyat & titik koordinat GPS berhasil disimpan.');
+    try {
+      await onSaveSchool(newSchool);
+      setSelectedSchool(newSchool);
+      setShowSchoolForm(false);
+      setEditingSchoolId(null);
+      setSchoolName('');
+      setNpsn('');
+      setAddress('');
+      setPrincipalName('');
+      notify('Data Sekolah Rakyat & titik koordinat GPS berhasil disimpan.');
+    } catch {
+      notify('Gagal menyimpan data sekolah ke server.');
+    }
   };
 
   const handleDeliverySubmit = async (e: React.FormEvent) => {
@@ -175,15 +195,25 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
       schoolName: targetSchool.schoolName,
       menuPackage: delMenuPkg.trim(),
       portionsDelivered: Number(delPortions),
+      portionsPlanned: Number(delPortionsPlanned) || Number(delPortions),
+      productionBatchId: delBatchId || undefined,
       courierName: delCourier.trim(),
       departureTime: delDepart.trim(),
       arrivalTime: delArrive.trim(),
-      recipientName: targetSchool.principalName,
+      recipientName: delRecipient.trim() || targetSchool.principalName,
+      handoverProofNote: delProofNote.trim().slice(0, 400) || undefined,
+      handoverProofUrl: delProofUrl.trim().slice(0, 500) || undefined,
       status: delStatus,
     };
-    await onSaveDelivery(newDel);
-    setShowDeliveryForm(false);
-    notify(`Pengiriman makanan ke ${targetSchool.schoolName} berhasil dicatat.`);
+    try {
+      await onSaveDelivery(newDel);
+      setShowDeliveryForm(false);
+      setDelProofNote('');
+      setDelProofUrl('');
+      notify(`Pengiriman makanan ke ${targetSchool.schoolName} berhasil dicatat.`);
+    } catch {
+      notify('Gagal mencatat pengiriman sekolah ke server.');
+    }
   };
 
   const filteredSchools = schools.filter(
@@ -193,6 +223,18 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
       s.npsn.toLowerCase().includes(searchQuery.toLowerCase()) ||
       s.principalName.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const filteredDeliveries = deliveries.filter((d) => {
+    const matchStatus = delStatusFilter === 'Semua' || d.status === delStatusFilter;
+    const q = delSearch.trim().toLowerCase();
+    const matchQ =
+      !q ||
+      d.schoolName.toLowerCase().includes(q) ||
+      d.courierName.toLowerCase().includes(q) ||
+      d.recipientName.toLowerCase().includes(q) ||
+      d.menuPackage.toLowerCase().includes(q);
+    return matchStatus && matchQ;
+  });
 
   const totalStudents = schools.reduce((acc, s) => acc + s.studentCount, 0);
   const totalClasses = schools.reduce((acc, s) => acc + s.classCount, 0);
@@ -449,7 +491,9 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
               className="rounded-xl border border-slate-200 bg-white p-5 space-y-4"
             >
               <h3 className="text-sm font-bold text-slate-900">
-                Formulir Registrasi Sekolah Rakyat Mitra Baru
+                {editingSchoolId
+                  ? 'Perbarui Data Sekolah Rakyat Mitra'
+                  : 'Formulir Registrasi Sekolah Rakyat Mitra Baru'}
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
@@ -678,7 +722,30 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
                       <td className="py-3 px-4 font-semibold text-emerald-700">
                         {sch.partnershipStatus}
                       </td>
-                      <td className="py-3 px-4 text-right">
+                      <td className="py-3 px-4 text-right space-x-3 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingSchoolId(sch.id);
+                            setSchoolName(sch.schoolName);
+                            setNpsn(sch.npsn);
+                            setAddress(sch.address);
+                            setPrincipalName(sch.principalName);
+                            setContactPhone(sch.contactPhone);
+                            setLat(sch.lat);
+                            setLng(sch.lng);
+                            setStudentCount(sch.studentCount);
+                            setClassCount(sch.classCount);
+                            setDeliverySchedule(sch.deliverySchedule);
+                            setPartnershipStatus(sch.partnershipStatus);
+                            setShowSchoolForm(true);
+                          }}
+                          aria-label={`Edit ${sch.schoolName}`}
+                          className="text-slate-700 hover:text-emerald-700 font-semibold inline-flex items-center gap-1"
+                        >
+                          <Edit3 className="h-3.5 w-3.5" /> Edit
+                        </button>
                         <button
                           type="button"
                           onClick={(e) => {
@@ -693,6 +760,13 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
                       </td>
                     </tr>
                   ))}
+                  {filteredSchools.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-8 px-4 text-center text-xs text-slate-500">
+                        Belum ada data sekolah mitra Sekolah Rakyat.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -700,22 +774,30 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
         </div>
       )}
 
-      {/* SUB-TAB 2: DISTRIBUSI & PENGIRIMAN HARIAN */}
+      {/* SUB-TAB 2: DISTRIBUSI, PRODUKSI & RIWAYAT PENGIRIMAN */}
       {activeSubTab === 'deliveries' && (
         <div className="space-y-5">
-          <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4">
             <div>
               <h2 className="text-sm font-bold text-slate-900">
-                Monitoring Pengiriman & Distribusi Porsi Harian Sekolah Rakyat
+                Monitoring &amp; Riwayat Distribusi Sekolah Rakyat
               </h2>
               <p className="text-xs text-slate-500">
-                Pencatatan jam keberangkatan armada, jam tiba, jumlah porsi, dan pejabat penerima di sekolah.
+                Terhubung ke batch produksi dapur, waktu berangkat/tiba, nama penerima, dan bukti serah terima.
               </p>
             </div>
             <button
               type="button"
-              onClick={() => setShowDeliveryForm((prev) => !prev)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-800"
+              onClick={() => {
+                if (!delSchoolId && schools[0]) {
+                  setDelSchoolId(schools[0].id);
+                  setDelPortions(schools[0].studentCount);
+                  setDelPortionsPlanned(schools[0].studentCount);
+                  setDelRecipient(schools[0].principalName);
+                }
+                setShowDeliveryForm((prev) => !prev);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-800 whitespace-nowrap shrink-0"
             >
               <Plus className="h-4 w-4" />
               <span>Catat Pengiriman Sekolah</span>
@@ -728,7 +810,7 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
               className="rounded-xl border border-slate-200 bg-white p-5 space-y-4"
             >
               <h3 className="text-sm font-bold text-slate-900">
-                Input Surat Jalan & Pengiriman Makanan Sekolah Rakyat
+                Input Surat Jalan &amp; Pengiriman Makanan Sekolah Rakyat
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
@@ -753,7 +835,11 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
                     onChange={(e) => {
                       setDelSchoolId(e.target.value);
                       const found = schools.find((s) => s.id === e.target.value);
-                      if (found) setDelPortions(found.studentCount);
+                      if (found) {
+                        setDelPortions(found.studentCount);
+                        setDelPortionsPlanned(found.studentCount);
+                        setDelRecipient(found.principalName);
+                      }
                     }}
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
                   >
@@ -763,6 +849,44 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
                       </option>
                     ))}
                   </select>
+                </div>
+                <div>
+                  <label htmlFor="del-batch" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Batch Produksi Dapur Terkait
+                  </label>
+                  <select
+                    id="del-batch"
+                    value={delBatchId}
+                    onChange={(e) => {
+                      setDelBatchId(e.target.value);
+                      const batch = productionBatches.find((b) => b.id === e.target.value);
+                      if (batch) {
+                        setDelMenuPkg(batch.menuName);
+                      }
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
+                  >
+                    <option value="">-- Pilih Batch Produksi (Opsional) --</option>
+                    {productionBatches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {formatTanggalIndonesia(b.productionDate)} · {b.menuName} ({b.portions} pax)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="del-planned" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Kuota Direncanakan (Porsi)
+                  </label>
+                  <input
+                    id="del-planned"
+                    type="number"
+                    min={1}
+                    value={delPortionsPlanned}
+                    onChange={(e) => setDelPortionsPlanned(Number(e.target.value))}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono tabular-nums text-slate-900"
+                  />
                 </div>
                 <div>
                   <label htmlFor="del-portions" className="block text-xs font-semibold text-slate-700 mb-1">
@@ -789,15 +913,56 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
                   />
                 </div>
+
                 <div>
                   <label htmlFor="del-courier" className="block text-xs font-semibold text-slate-700 mb-1">
-                    Armada & Kurir Pengantar
+                    Nama Petugas &amp; Armada Pengiriman
                   </label>
                   <input
                     id="del-courier"
                     type="text"
                     value={delCourier}
                     onChange={(e) => setDelCourier(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="del-depart" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Waktu Keberangkatan
+                  </label>
+                  <input
+                    id="del-depart"
+                    type="text"
+                    value={delDepart}
+                    onChange={(e) => setDelDepart(e.target.value)}
+                    placeholder="06:55 WIB"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="del-arrive" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Waktu Penerimaan / Estimasi Tiba
+                  </label>
+                  <input
+                    id="del-arrive"
+                    type="text"
+                    value={delArrive}
+                    onChange={(e) => setDelArrive(e.target.value)}
+                    placeholder="07:30 WIB"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="del-recipient" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Nama Penerima di Sekolah
+                  </label>
+                  <input
+                    id="del-recipient"
+                    type="text"
+                    value={delRecipient}
+                    onChange={(e) => setDelRecipient(e.target.value)}
+                    placeholder="Kepala Sekolah / Guru Piket"
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
                   />
                 </div>
@@ -814,8 +979,35 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
                     <option value="Persiapan">Persiapan</option>
                     <option value="Dalam Pengiriman">Dalam Pengiriman</option>
                     <option value="Selesai">Selesai</option>
+                    <option value="Dibatalkan">Dibatalkan</option>
                   </select>
                 </div>
+                <div>
+                  <label htmlFor="del-proof-url" className="block text-xs font-semibold text-slate-700 mb-1">
+                    Referensi / URL Foto Serah Terima
+                  </label>
+                  <input
+                    id="del-proof-url"
+                    type="text"
+                    value={delProofUrl}
+                    onChange={(e) => setDelProofUrl(e.target.value)}
+                    placeholder="https://... atau No. BAST"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                  />
+                </div>
+              </div>
+              <div>
+                <label htmlFor="del-proof-note" className="block text-xs font-semibold text-slate-700 mb-1">
+                  Catatan Berita Acara Serah Terima (Bukti Pengiriman)
+                </label>
+                <input
+                  id="del-proof-note"
+                  type="text"
+                  value={delProofNote}
+                  onChange={(e) => setDelProofNote(e.target.value)}
+                  placeholder="Contoh: Diterima lengkap 420 porsi, suhu hangat, ditandatangani Kepala Sekolah."
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900"
+                />
               </div>
               <div className="flex items-center justify-end gap-2">
                 <button
@@ -835,70 +1027,149 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
             </form>
           )}
 
+          {/* Riwayat Distribusi Filter Bar */}
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="font-bold text-xs text-slate-900">
+                Riwayat Distribusi &amp; Bukti Serah Terima ({filteredDeliveries.length})
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-2" />
+                  <input
+                    type="text"
+                    value={delSearch}
+                    onChange={(e) => setDelSearch(e.target.value)}
+                    placeholder="Cari sekolah, kurir, penerima..."
+                    aria-label="Cari riwayat distribusi"
+                    className="rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs text-slate-900"
+                  />
+                </div>
+                <select
+                  value={delStatusFilter}
+                  onChange={(e) => setDelStatusFilter(e.target.value)}
+                  aria-label="Filter status distribusi"
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800"
+                >
+                  <option value="Semua">Semua Status</option>
+                  <option value="Persiapan">Persiapan</option>
+                  <option value="Dalam Pengiriman">Dalam Pengiriman</option>
+                  <option value="Selesai">Selesai</option>
+                  <option value="Dibatalkan">Dibatalkan</option>
+                </select>
+              </div>
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
                     <th className="py-3 px-4 font-semibold">Tanggal</th>
-                    <th className="py-3 px-4 font-semibold">Sekolah Rakyat Tujuan</th>
-                    <th className="py-3 px-4 font-semibold">Menu Paket Gizi</th>
+                    <th className="py-3 px-4 font-semibold">Sekolah Rakyat &amp; Penerima</th>
+                    <th className="py-3 px-4 font-semibold">Menu &amp; Produksi</th>
                     <th className="py-3 px-4 font-semibold text-right">Porsi</th>
-                    <th className="py-3 px-4 font-semibold">Armada & Jam Tiba</th>
-                    <th className="py-3 px-4 font-semibold">Status Serah Terima</th>
+                    <th className="py-3 px-4 font-semibold">Petugas &amp; Waktu</th>
+                    <th className="py-3 px-4 font-semibold">Bukti Serah Terima</th>
+                    <th className="py-3 px-4 font-semibold">Status</th>
                     <th className="py-3 px-4 font-semibold text-right">Tindakan</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {deliveries.map((del) => (
-                    <tr key={del.id} className="hover:bg-slate-50">
-                      <td className="py-3 px-4 font-mono tabular-nums text-slate-700">
-                        {formatTanggalIndonesia(del.deliveryDate)}
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="font-bold text-slate-900">{del.schoolName}</div>
-                        <div className="text-slate-500">Penerima: {del.recipientName}</div>
-                      </td>
-                      <td className="py-3 px-4 text-slate-700">{del.menuPackage}</td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-slate-900">
-                        {del.portionsDelivered} porsi
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="text-slate-800 font-medium">{del.courierName}</div>
-                        <div className="font-mono tabular-nums text-slate-500">
-                          Berangkat {del.departureTime} · Tiba {del.arrivalTime}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <select
-                          aria-label={`Ubah status pengiriman ${del.schoolName}`}
-                          value={del.status}
-                          onChange={(e) =>
-                            onSaveDelivery({
-                              ...del,
-                              status: e.target.value as SchoolDelivery['status'],
-                            })
-                          }
-                          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800"
-                        >
-                          <option value="Persiapan">Persiapan</option>
-                          <option value="Dalam Pengiriman">Dalam Pengiriman</option>
-                          <option value="Selesai">Selesai</option>
-                          <option value="Dibatalkan">Dibatalkan</option>
-                        </select>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <button
-                          type="button"
-                          onClick={() => onDeleteDelivery(del.id)}
-                          aria-label={`Hapus pengiriman ${del.schoolName}`}
-                          className="text-red-600 hover:text-red-800 font-semibold"
-                        >
-                          Hapus
-                        </button>
+                  {filteredDeliveries.map((del) => {
+                    const linkedBatch = del.productionBatchId
+                      ? productionBatches.find((b) => b.id === del.productionBatchId)
+                      : undefined;
+                    return (
+                      <tr key={del.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-mono tabular-nums text-slate-700 whitespace-nowrap">
+                          {formatTanggalIndonesia(del.deliveryDate)}
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-slate-900">{del.schoolName}</div>
+                          <div className="text-slate-500">Penerima: {del.recipientName}</div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="text-slate-800 font-medium">{del.menuPackage}</div>
+                          {linkedBatch && (
+                            <div className="text-[11px] text-emerald-700">
+                              Batch: {linkedBatch.officerName} ({linkedBatch.status})
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-slate-900 whitespace-nowrap">
+                          {del.portionsDelivered} pax
+                          {del.portionsPlanned && del.portionsPlanned !== del.portionsDelivered && (
+                            <div className="text-[11px] font-normal text-slate-500">
+                              Rencana: {del.portionsPlanned}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="text-slate-800 font-medium">{del.courierName}</div>
+                          <div className="font-mono tabular-nums text-slate-500">
+                            Berangkat {del.departureTime} · Terima {del.arrivalTime}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 max-w-[200px]">
+                          {del.handoverProofNote || del.handoverProofUrl ? (
+                            <div className="space-y-0.5">
+                              {del.handoverProofNote && (
+                                <div className="text-slate-700">{del.handoverProofNote}</div>
+                              )}
+                              {del.handoverProofUrl && (
+                                <div className="inline-flex items-center gap-1 text-[11px] text-emerald-700 font-semibold break-all">
+                                  <Camera className="h-3 w-3 shrink-0" />
+                                  <span>{del.handoverProofUrl}</span>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">Belum dilampirkan</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <select
+                            aria-label={`Ubah status pengiriman ${del.schoolName}`}
+                            value={del.status}
+                            onChange={async (e) => {
+                              try {
+                                await onSaveDelivery({
+                                  ...del,
+                                  status: e.target.value as SchoolDelivery['status'],
+                                });
+                                notify(`Status distribusi ke ${del.schoolName} diperbarui.`);
+                              } catch {
+                                notify('Gagal memperbarui status distribusi ke server.');
+                              }
+                            }}
+                            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-800"
+                          >
+                            <option value="Persiapan">Persiapan</option>
+                            <option value="Dalam Pengiriman">Dalam Pengiriman</option>
+                            <option value="Selesai">Selesai</option>
+                            <option value="Dibatalkan">Dibatalkan</option>
+                          </select>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={() => onDeleteDelivery(del.id)}
+                            aria-label={`Hapus pengiriman ${del.schoolName}`}
+                            className="text-red-600 hover:text-red-800 font-semibold"
+                          >
+                            Hapus
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filteredDeliveries.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="py-8 px-4 text-center text-xs text-slate-500">
+                        Belum ada catatan riwayat distribusi sekolah yang sesuai.
                       </td>
                     </tr>
-                  ))}
+                  )}
                 </tbody>
               </table>
             </div>
@@ -932,19 +1203,19 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
             <div>
               <span className="text-slate-500 block">Penyelenggara Dapur Sentral:</span>
               <span className="font-bold text-slate-900">
-                Smart Catering & Sekolah Rakyat Management System
+                Smart Catering &amp; Sekolah Rakyat Management System
               </span>
             </div>
             <div>
-              <span className="text-slate-500 block">Standar Mutu & Higienitas:</span>
+              <span className="text-slate-500 block">Standar Mutu &amp; Higienitas:</span>
               <span className="font-bold text-emerald-800">
-                Lolos QC Ahli Gizi (protein hewani, sayur, buah & susu UHT)
+                Lolos QC Ahli Gizi (protein hewani, sayur, buah &amp; susu UHT)
               </span>
             </div>
             <div>
               <span className="text-slate-500 block">Total Realisasi Tersalurkan:</span>
               <span className="font-mono tabular-nums font-bold text-slate-900">
-                {totalPortionsDistributed.toLocaleString('id-ID')} Porsi Tersalurkan (100% Sesuai Kuota)
+                {totalPortionsDistributed.toLocaleString('id-ID')} Porsi Tersalurkan
               </span>
             </div>
           </div>
@@ -963,7 +1234,16 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {schools.map((sch) => {
-                  const del = deliveries.find((d) => d.schoolId === sch.id);
+                  const schDeliveries = deliveries.filter(
+                    (d) => d.schoolId === sch.id && d.status !== 'Dibatalkan'
+                  );
+                  const realisasi = schDeliveries.reduce(
+                    (sum, d) => sum + d.portionsDelivered,
+                    0
+                  );
+                  const completedCount = schDeliveries.filter(
+                    (d) => d.status === 'Selesai'
+                  ).length;
                   return (
                     <tr key={sch.id}>
                       <td className="py-2.5 px-3 font-mono tabular-nums text-slate-700">
@@ -975,10 +1255,14 @@ export const SekolahRakyatModule: React.FC<SekolahRakyatModuleProps> = ({
                         {sch.studentCount}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums font-bold text-emerald-700">
-                        {del ? del.portionsDelivered : sch.studentCount}
+                        {realisasi.toLocaleString('id-ID')}
                       </td>
                       <td className="py-2.5 px-3 text-slate-700">
-                        Terverifikasi · BAST Lengkap
+                        {completedCount > 0
+                          ? `Terverifikasi · ${completedCount} Pengiriman Selesai`
+                          : schDeliveries.length > 0
+                          ? `${schDeliveries.length} Pengiriman Berjalan`
+                          : 'Belum Ada Distribusi'}
                       </td>
                     </tr>
                   );
