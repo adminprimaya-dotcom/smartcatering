@@ -1,7 +1,18 @@
 import express from 'express';
+import crypto from 'crypto';
 import fs from 'fs';
+import nodemailer from 'nodemailer';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  DEFAULT_RECOVERY_EMAIL,
+  RESET_CODE_TTL_MS,
+  buildPasswordResetEmailContent,
+  resolveRecoveryEmail,
+  validateAdminCredentialsMatch,
+  validateNewPasswordInput,
+  verifyResetTokenRecord,
+} from './src/utils/adminAuth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -470,13 +481,119 @@ async function startServer() {
 
   const DEFAULT_ADMIN_ACCOUNT: StoredAdminAccount = {
     username: 'admin',
-    email: 'primayaadmin@gmail.com',
-    displayName: 'Ir. Pratama Wijaya, MBA',
-    password: 'SmartCatering2026!',
+    email: DEFAULT_RECOVERY_EMAIL,
+    displayName: 'Administrator Utama',
+    password: 'Zkldwi123',
     role: 'Super Admin',
     department: 'Direksi & Manajemen Utama',
-    updatedAt: '2026-11-16T07:00:00.000Z',
+    updatedAt: '2026-11-16T22:00:00.000Z',
   };
+
+  const PASSWORD_RESETS_PATH = path.resolve(DATA_DIR, 'password-resets.json');
+
+  interface StoredPasswordResetRecord {
+    id: string;
+    targetEmail: string;
+    code: string;
+    createdAt: string;
+    expiresAtMs: number;
+    used: boolean;
+    attempts: number;
+    deliveryChannel: 'smtp' | 'resend' | 'sandbox-outbox';
+  }
+
+  function loadPasswordResets(): StoredPasswordResetRecord[] {
+    try {
+      if (!fs.existsSync(PASSWORD_RESETS_PATH)) return [];
+      const raw = fs.readFileSync(PASSWORD_RESETS_PATH, 'utf-8');
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as StoredPasswordResetRecord[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function savePasswordResets(records: StoredPasswordResetRecord[]): void {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      fs.writeFileSync(PASSWORD_RESETS_PATH, JSON.stringify(records.slice(0, 20), null, 2), 'utf-8');
+    } catch (err) {
+      console.error('Failed to write password-resets.json:', err);
+    }
+  }
+
+  async function dispatchResetEmail(mail: {
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+  }): Promise<{ delivered: boolean; channel: 'smtp' | 'resend' | 'sandbox-outbox'; detail?: string }> {
+    const smtpUser = (process.env.SMTP_USER || process.env.GMAIL_USER || '').trim();
+    const smtpPass = (process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || '').trim();
+    const smtpHost = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+    const smtpPort = Number(process.env.SMTP_PORT || 465);
+
+    if (smtpUser && smtpPass) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: smtpPort,
+          secure: smtpPort === 465,
+          auth: { user: smtpUser, pass: smtpPass },
+        });
+        await transporter.sendMail({
+          from: `"Smart Catering Admin" <${smtpUser}>`,
+          to: mail.to,
+          subject: mail.subject,
+          text: mail.text,
+          html: mail.html,
+        });
+        return { delivered: true, channel: 'smtp' };
+      } catch (err) {
+        console.error('SMTP email dispatch failed:', err);
+        return {
+          delivered: false,
+          channel: 'sandbox-outbox',
+          detail: err instanceof Error ? err.message : 'SMTP dispatch error',
+        };
+      }
+    }
+
+    const resendKey = (process.env.RESEND_API_KEY || '').trim();
+    if (resendKey) {
+      try {
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: process.env.RESEND_FROM_EMAIL || 'Smart Catering <onboarding@resend.dev>',
+            to: [mail.to],
+            subject: mail.subject,
+            text: mail.text,
+            html: mail.html,
+          }),
+        });
+        if (res.ok) {
+          return { delivered: true, channel: 'resend' };
+        }
+        const errBody = await res.text();
+        console.error('Resend API dispatch failed:', errBody);
+      } catch (err) {
+        console.error('Resend API request failed:', err);
+      }
+    }
+
+    return {
+      delivered: false,
+      channel: 'sandbox-outbox',
+      detail: 'SMTP_USER/SMTP_PASS atau RESEND_API_KEY belum dikonfigurasi pada server.',
+    };
+  }
 
   function loadAdminAccount(): StoredAdminAccount {
     try {
@@ -529,7 +646,7 @@ async function startServer() {
 
   app.post('/api/admin/login', (req, res) => {
     const { identifier, password, role } = req.body || {};
-    const cleanId = String(identifier || '').trim().toLowerCase();
+    const cleanId = String(identifier || '').trim();
     const rawPass = String(password || '');
     const account = loadAdminAccount();
 
@@ -542,16 +659,12 @@ async function startServer() {
       return;
     }
 
-    const matchesIdentifier =
-      cleanId === account.username.trim().toLowerCase() ||
-      cleanId === account.email.trim().toLowerCase() ||
-      cleanId === 'admin@smartcatering.id' ||
-      cleanId === 'superadmin';
+    const authenticated = validateAdminCredentialsMatch(
+      { identifier: cleanId, password: rawPass },
+      account
+    );
 
-    const matchesPassword =
-      rawPass === account.password || rawPass === 'SmartCatering2026!';
-
-    if (!matchesIdentifier || !matchesPassword) {
+    if (!authenticated) {
       res.status(200).json({
         ok: false,
         authenticated: false,
@@ -581,6 +694,103 @@ async function startServer() {
     });
   });
 
+  app.post('/api/admin/forgot-password', async (_req, res) => {
+    const account = loadAdminAccount();
+    const targetEmail = resolveRecoveryEmail(account.email || DEFAULT_RECOVERY_EMAIL);
+    const code = String(crypto.randomInt(100000, 1000000));
+    const nowMs = Date.now();
+    const sentAt = new Date(nowMs).toISOString();
+
+    const mailContent = buildPasswordResetEmailContent({
+      toEmail: targetEmail,
+      code,
+      appTitle: 'Smart Catering & Sekolah Rakyat ERP',
+      expiresMinutes: 15,
+    });
+
+    const delivery = await dispatchResetEmail(mailContent);
+
+    const existing = loadPasswordResets().map((item) => ({ ...item, used: true }));
+    const newRecord: StoredPasswordResetRecord = {
+      id: `rst-${crypto.randomUUID()}`,
+      targetEmail,
+      code,
+      createdAt: sentAt,
+      expiresAtMs: nowMs + RESET_CODE_TTL_MS,
+      used: false,
+      attempts: 0,
+      deliveryChannel: delivery.channel,
+    };
+    savePasswordResets([newRecord, ...existing]);
+
+    res.json({
+      ok: true,
+      targetEmail,
+      emailDelivered: delivery.delivered,
+      deliveryChannel: delivery.channel,
+      deliveryDetail: delivery.detail,
+      expiresInMinutes: 15,
+      sentAt,
+      mailtoUrl: mailContent.mailtoUrl,
+      ...(delivery.delivered ? {} : { sandboxCode: code }),
+    });
+  });
+
+  app.post('/api/admin/reset-password', (req, res) => {
+    const { code, newPassword, confirmPassword } = req.body || {};
+    const passwordCheck = validateNewPasswordInput(
+      String(newPassword || ''),
+      String(confirmPassword || '')
+    );
+    if (!passwordCheck.valid || !passwordCheck.cleanedPassword) {
+      res.status(200).json({
+        ok: false,
+        reset: false,
+        error: passwordCheck.error,
+      });
+      return;
+    }
+
+    const records = loadPasswordResets();
+    const latest = records.find((r) => !r.used) || records[0] || null;
+    const verification = verifyResetTokenRecord(latest, String(code || ''), Date.now());
+
+    if (!verification.valid || !latest) {
+      if (latest && !latest.used) {
+        const updatedRecords = records.map((r) =>
+          r.id === latest.id ? { ...r, attempts: r.attempts + 1 } : r
+        );
+        savePasswordResets(updatedRecords);
+      }
+      res.status(200).json({
+        ok: false,
+        reset: false,
+        error: verification.error,
+      });
+      return;
+    }
+
+    const account = loadAdminAccount();
+    const updatedAccount: StoredAdminAccount = {
+      ...account,
+      password: passwordCheck.cleanedPassword,
+      updatedAt: new Date().toISOString(),
+    };
+    saveAdminAccount(updatedAccount);
+
+    savePasswordResets(
+      records.map((r) => (r.id === latest.id ? { ...r, used: true } : r))
+    );
+
+    res.json({
+      ok: true,
+      reset: true,
+      username: updatedAccount.username,
+      email: updatedAccount.email,
+      message: 'Kata sandi admin berhasil direset. Silakan masuk dengan kata sandi baru.',
+    });
+  });
+
   app.post('/api/admin/credentials', (req, res) => {
     const {
       currentPassword,
@@ -595,11 +805,7 @@ async function startServer() {
     const account = loadAdminAccount();
     const cleanCurrentPass = String(currentPassword || '');
 
-    if (
-      cleanCurrentPass &&
-      cleanCurrentPass !== account.password &&
-      cleanCurrentPass !== 'SmartCatering2026!'
-    ) {
+    if (!cleanCurrentPass || cleanCurrentPass !== account.password) {
       res.status(200).json({
         ok: false,
         updated: false,
@@ -972,8 +1178,8 @@ async function startServer() {
     {
       id: 'usr-1',
       ownerId: 'admin-workspace-uid',
-      displayName: 'Ir. Pratama Wijaya, MBA',
-      email: 'primayaadmin@gmail.com',
+      displayName: 'Administrator Utama',
+      email: DEFAULT_RECOVERY_EMAIL,
       role: 'Super Admin',
       department: 'Direksi & Manajemen Pusat',
       status: 'Aktif',

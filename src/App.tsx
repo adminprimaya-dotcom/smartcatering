@@ -186,8 +186,8 @@ export default function App() {
   const [isCloudAuthenticated, setIsCloudAuthenticated] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminUsername, setAdminUsername] = useState('admin');
-  const [userEmail, setUserEmail] = useState('primayaadmin@gmail.com');
-  const [userDisplayName, setUserDisplayName] = useState('Administrator');
+  const [userEmail, setUserEmail] = useState('adminzikrul@gmail.com');
+  const [userDisplayName, setUserDisplayName] = useState('Administrator Utama');
   const [currentRole, setCurrentRole] = useState<UserRole>('Super Admin');
 
   // Sync & Pagination State
@@ -2384,7 +2384,6 @@ export default function App() {
         userDisplayName={userDisplayName}
         isCloudAuthenticated={isCloudAuthenticated}
         initialTab={loginModalTab}
-        onGoogleLogin={handleGoogleLogin}
         onCredentialLogin={handleCredentialLogin}
         onUpdateCredentials={handleUpdateAdminCredentials}
         onLogout={handleLogout}
